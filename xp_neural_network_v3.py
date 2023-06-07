@@ -1,0 +1,1509 @@
+#!/usr/bin/env python
+
+from __future__ import print_function, division
+
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.cm as cm
+import matplotlib.ticker as ticker
+from matplotlib.colors import Normalize, LogNorm
+plt.rcParams['savefig.dpi'] = 200
+plt.rcParams['savefig.format'] = 'png'
+
+import os
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3' 
+import tensorflow as tf
+import tensorflow.keras as keras
+import tensorflow_probability as tfp
+import sonnet as snt
+gpus = tf.config.experimental.list_physical_devices('GPU')
+for gpu in gpus:
+  tf.config.experimental.set_memory_growth(gpu, True)
+
+from scipy.stats import binned_statistic_2d
+from scipy.special import logsumexp
+import scipy.ndimage
+import scipy.signal
+
+from astropy.table import Table
+import astropy.io.fits as fits
+
+import h5py
+import os
+import json
+from glob import glob
+from tqdm import tqdm
+
+from xp_utils import XPSampler, sqrt_icov_eigen
+from plot_utils import plot_corr, plot_mollweide, \
+                       projection_grid, healpix_mean_map
+
+from astropy_healpix import HEALPix
+from astropy.coordinates import SkyCoord
+import astropy.units as units
+import astropy.constants as const
+
+
+def corr_matrix(cov):
+    sigma = np.sqrt(np.diag(cov))
+    corr = cov / np.outer(sigma, sigma)
+    corr[np.diag_indices(corr.shape[0])] = sigma
+    return corr
+
+
+class FluxModel(snt.Module):
+    def __init__(self, sample_wavelengths, n_input=3, 
+                       n_hidden=3, hidden_size=32,
+                       input_zp=None, input_scale=None,
+                       l2=1., l2_ext_curve=1.):
+        """
+        Constructor for FluxModel.
+        """
+        super(FluxModel, self).__init__(name='flux_model')
+
+        self._sample_wavelengths = tf.Variable(
+            sample_wavelengths,
+            name='sample_wavelengths',
+            dtype=tf.float32,
+            trainable=False
+        )
+        self._n_output = len(sample_wavelengths)
+        self._n_input = n_input
+        self._n_hidden = n_hidden
+        self._hidden_size = hidden_size
+
+        # L2 penalty on neural network weights
+        self._l2 = tf.Variable(
+            l2, name='l2',
+            dtype=tf.float32,
+            trainable=False
+        )
+        self._l2_ext_curve = tf.Variable(
+            l2_ext_curve, name='l2_ext_curve',
+            dtype=tf.float32,
+            trainable=False
+        )
+
+        # Scaling of input
+        if input_zp is None:
+            zp = np.zeros((1, n_input), dtype='f4')
+        else:
+            zp = np.reshape(input_zp, (1, n_input)).astype('f4')
+
+        if input_scale is None:
+            iscale = np.ones((1, n_input), dtype='f4')
+        else:
+            iscale = 1 / np.reshape(input_scale, (1, n_input)).astype('f4')
+        self._input_zp = tf.Variable(
+            zp,
+            name='input_zp',
+            trainable=False
+        )
+        self._input_iscale = tf.Variable(
+            iscale,
+            name='input_iscale',
+            trainable=False
+        )
+        
+        # Neural network of the stellar model
+        self._layers = [
+            snt.Linear(hidden_size, name=f'hidden_{i}')
+            for i in range(n_hidden)
+        ]
+        self._layers.append(snt.Linear(self._n_output, name='flux'))        
+        self._activation = tf.math.tanh
+        
+        # Initialize extinction curve
+        self._ext_slope = tf.Variable(tf.zeros( (1, self._n_output) ), name='ext_slope')
+        self._ext_bias = tf.Variable(tf.zeros( (1, self._n_output) ), name='ext_bias')        
+
+        # Initialize neural network        
+        self.predict_intrinsic_ln_flux(tf.zeros([1,n_input]))
+        self.predict_ln_ext_curve(tf.zeros([1, 1]))
+        
+        # Load the initial guess of the extinction curve
+        dc_drv = np.load('initial_guess.npy').astype('float32')
+        self._ext_slope.assign(dc_drv.reshape(1,-1))
+        
+        # Count the total number of weights
+        self._n_flux_weights = sum([int(tf.size(l.w)) for l in self._layers])   
+        self._n_ext_weights = int(tf.size(self._ext_slope))
+
+    def predict_intrinsic_ln_flux(self, stellar_type):
+        """
+        Returns the predicted ln(flux) for the input stellar types,
+        at zero extinction and a standard distance (corresponding
+        to parallax = 1, in whatever units are being used).
+        """
+        # Normalize the stellar parameters
+        x = (stellar_type - self._input_zp) * self._input_iscale
+        # Run the normalized parameters through the neural net
+        for layer in self._layers[:-1]:
+            x = layer(x)
+            x = self._activation(x)
+        # No activation on the final layer
+        flux = self._layers[-1](x)
+        return flux
+
+    def predict_ln_ext_curve(self, xi):
+        """
+        Returns the predicted ln(ext_curve) for the input xi.
+        """
+        # Run xi through the neural net
+        x = tf.expand_dims(xi, 1) # shape = (star, 1)
+        ln_ext = self._ext_slope*x + self._ext_bias # shape = (star, wavelength)
+        return ln_ext
+
+    def predict_obs_flux(self, stellar_type, xi,
+                         stellar_extinction, stellar_parallax):
+        """
+        Returns predicted flux for the given stellar types,
+        at the given parallaxes and extinctions.
+        """
+        # Convert extinction curve from log to linear scale
+        ext_curve = tf.math.exp(self.predict_ln_ext_curve(xi))
+        # All tensors should end up with shape (star, wavelength)
+        optical_depth = (
+            ext_curve
+          * tf.expand_dims(stellar_extinction, axis=1) # Add in wavelength axis
+        )
+        # Add in wavelength axis. Reference distance = 1/(units of parallax).
+        distance_factor = tf.expand_dims(stellar_parallax**2, axis=1)
+        # ln(flux) at reference distance
+        ln_flux_pred_r0 = self.predict_intrinsic_ln_flux(stellar_type)
+        # Flux at parallax distance
+        flux_pred = (
+            tf.math.exp(ln_flux_pred_r0 - optical_depth)
+          * distance_factor
+        )
+        return flux_pred
+
+    def calc_chi2(self, stellar_type, xi,
+                  stellar_extinction, stellar_parallax,
+                  flux_obs, flux_sqrticov):
+        # Calculate predicted flux
+        flux_pred = self.predict_obs_flux(
+            stellar_type, xi, stellar_extinction, stellar_parallax
+        )
+        # chi^2
+        dflux = flux_pred - flux_obs
+        #print('flux_icov.shape:', flux_icov.shape)
+        #print('dflux.shape:', dflux.shape)
+        sqrticov_dflux = tf.linalg.matvec(flux_sqrticov, dflux)
+        #print('icov_dflux.shape:', icov_dflux.shape)
+        chi2 = tf.reduce_sum(sqrticov_dflux*sqrticov_dflux, axis=1)
+        #print('chi2.shape:', chi2.shape)
+        return chi2
+
+    def penalty(self):
+        l2_sum = 0.
+        # Penalty on stellar model nn weights
+        for layer in self._layers:
+            l2_sum = l2_sum + tf.reduce_sum(layer.w**2)
+        l2_sum = self._l2 * l2_sum / self._n_flux_weights
+        # Penalty on variation of the extinction curve
+        l2_sum = l2_sum + self._l2_ext_curve*tf.reduce_mean(self._ext_slope**2)
+        return  l2_sum
+
+    def get_sample_wavelengths(self):
+        return self._sample_wavelengths.numpy()
+
+    def save(self, checkpoint_name):
+        # Checkpoint Tensorflow Variables
+        checkpoint = tf.train.Checkpoint(flux_model=self)
+        checkpoint.save(checkpoint_name)
+
+    @classmethod
+    def load(cls, checkpoint_name, latest=False):
+        if latest:
+            checkpoint_name = tf.train.latest_checkpoint(checkpoint_name)
+            print(f'Latest checkpoint: {checkpoint_name}')
+
+        # Inspect checkpoint to find input arguments
+        spec = {'n_hidden':-1}
+        print('Checkpoint contents:')
+        for vname,vshape in tf.train.list_variables(checkpoint_name):
+            print(f' * {vname} has shape {vshape}.')
+            if vname.startswith('flux_model/_sample_wavelengths/'):
+                spec['n_output'], = vshape
+            if vname.startswith('flux_model/_layers/0/w/'):
+                spec['n_input'], spec['hidden_size'] = vshape
+            if vname.startswith('flux_model/_layers/') and '/w/' in vname:
+                spec['n_hidden'] += 1
+                
+        print('Found checkpoint with following specifications:')
+        print(json.dumps(spec, indent=2))
+
+        # Create flux model
+        flux_model = cls(
+            np.linspace(0., 1., spec['n_output']).astype('f4'), # dummy array
+            n_input=spec['n_input'],
+            n_hidden=spec['n_hidden'],
+            hidden_size=spec['hidden_size'],
+        )
+
+        # Restore variables
+        checkpoint = tf.train.Checkpoint(flux_model=flux_model)
+        checkpoint.restore(checkpoint_name)
+
+        print('Loaded the following properties from checkpoint:')
+        for var in (flux_model._l2, flux_model._input_zp,
+                    flux_model._input_iscale,
+                    ):
+            print(var)
+        print('... in addition to weights and biases.')
+
+        return flux_model
+
+def chi_band(stellar_model, 
+                            type_est_batch, xi_est_batch, 
+                            ext_est_batch, plx_est_batch,
+                            flux_batch, flux_err_batch,
+            ):
+            '''
+            record the chi of given band
+            '''
+            flux_pred = stellar_model.predict_obs_flux(
+                type_est_batch, xi_est_batch, ext_est_batch, plx_est_batch
+            )
+            # chi^2
+            dflux = flux_pred - flux_batch
+            chi_flux = (dflux/flux_err_batch)**2
+            return chi_flux[:, 64:].numpy()
+
+def grads_stellar_model(stellar_model,
+                        stellar_type, xi,
+                        stellar_extinction, stellar_parallax,
+                        flux_obs, flux_sqrticov,
+                        extra_weight,
+                        chi2_turnover=tf.constant(10.),        
+                        model_update = ['stellar_model', 'ext_curve_w', 'ext_curve_b'],
+                        ):
+    """
+    Calculates the gradients of the loss (i.e., chi^2 + regularization)
+    w.r.t. the stellar model parameters, for a given batch of stars.
+    """
+    # Scale at which chi^2 growth is suppressed
+    chi2_factor = chi2_turnover * stellar_model._n_output
+
+    # Only want gradients of stellar model parameters and extinction curve
+    trainable_var = []
+    if 'stellar_model' in model_update:
+            trainable_var += [ f'flux_model/hidden_0/w:{i}',
+                for i in range(stellar_model._n_hidden)
+            ]
+            trainable_var += [ f'flux_model/hidden_0/b:{i}',
+                for i in range(stellar_model._n_hidden)
+            ]
+            trainable_var += [
+                 'flux_model/flux/b:0',
+                 'flux_model/flux/w:0'
+            ]
+    if 'ext_curve_b' in model_update:
+        trainable_var += [
+             'flux_model/ext_bias:0',
+        ]
+    if 'ext_curve_w' in model_update:
+        trainable_var += [
+            'flux_model/ext_slope:0',
+        ]
+        
+    variables = [i for i in stellar_model.trainable_variables 
+                        if i.name in trainable_var]
+
+    with tf.GradientTape(watch_accessed_variables=False) as g:
+        g.watch(variables)
+        
+        # Calculate chi^2 of each star
+        chi2 = stellar_model.calc_chi2(
+            stellar_type, xi,
+            stellar_extinction, stellar_parallax,
+            flux_obs, flux_sqrticov
+        )
+
+        # Suppress large chi^2 values
+        chi2 = chi2_factor * tf.math.asinh(chi2/chi2_factor)
+        # Average individual chi^2 values
+        chi2 = tf.reduce_sum(extra_weight*chi2) / tf.reduce_sum(extra_weight)
+        # Add in penalty (generally, for model complexity)
+        loss = chi2 + stellar_model.penalty()
+
+    # Calculate d(loss)/d(variables)
+    grads = g.gradient(loss, variables)
+
+    return loss, variables, grads
+
+
+def gaussian_prior(x, mu, sigma):
+    return ((x - mu) / sigma)**2
+
+
+def grads_stellar_params(stellar_model,
+                         stellar_type, stellar_type_obs, stellar_type_sigma,
+                         xi, 
+                         ln_stellar_ext, stellar_ext_obs, stellar_ext_sigma,
+                         ln_stellar_plx, stellar_plx_obs, stellar_plx_sigma,
+                         flux_obs, flux_sqrticov,
+                         extra_weight,
+                         chi2_turnover=tf.constant(10.),
+                         var_update = ['atm','E','plx','xi'],
+                        ):
+    # Scale at which chi^2 growth is suppressed
+    chi2_factor = chi2_turnover * stellar_model._n_output
+
+    # Only want gradients of stellar model parameters and extinction curve
+    variables = ()
+    if 'atm' in var_update:
+        variables += (stellar_type,)
+    if 'E' in var_update:
+        variables += (ln_stellar_ext,)
+    if 'plx' in var_update:
+        variables += (ln_stellar_plx,)
+    if 'xi' in var_update:
+        variables += (xi,)
+        
+    with tf.GradientTape(watch_accessed_variables=False) as g:
+        g.watch(variables)
+        # Convert quantities from log to linear scale
+        stellar_plx = tf.math.exp(ln_stellar_plx)
+        stellar_ext = tf.math.exp(ln_stellar_ext)
+        # Calculate chi^2 of each star
+        chi2 = stellar_model.calc_chi2(
+            stellar_type, xi, 
+            stellar_ext, stellar_plx,
+            flux_obs, flux_sqrticov
+        )
+        # Priors
+        prior_type = tf.math.reduce_sum(
+            gaussian_prior(
+                stellar_type,
+                stellar_type_obs,
+                stellar_type_sigma
+            ),
+            axis=1
+        )
+        prior_plx = (
+            gaussian_prior(stellar_plx, stellar_plx_obs, stellar_plx_sigma)
+          - 2*ln_stellar_plx # Jacobian of transformation from plx to ln(plx)
+        )
+        prior_ext = (
+            gaussian_prior(stellar_ext, stellar_ext_obs, stellar_ext_sigma)
+          - 2*ln_stellar_ext # Jacobian of transformation from E to ln(E)
+        )
+        prior_xi = gaussian_prior(xi, 0, 1)
+        prior = prior_type + prior_plx + prior_ext + prior_xi
+        # Posterior (one value per star, as they are independent)
+        # Caution: Do not multiply extra weight here, which slows down the update of atm
+        posterior = (chi2 + prior)
+    # Calculate d(posterior)/d(variables). Separate gradient per star.
+    grads = g.gradient(posterior, variables)
+    return posterior, variables, grads
+
+
+def get_batch_iterator(indices, batch_size, n_epochs):
+    n = len(indices)
+    batches = tf.data.Dataset.from_tensor_slices(indices)
+    batches = batches.shuffle(n, reshuffle_each_iteration=True)
+    batches = batches.repeat(n_epochs)
+    batches = batches.batch(batch_size, drop_remainder=True)
+    n_batches = int(np.floor(n * n_epochs / batch_size))
+    return batches, n_batches
+
+
+def identify_outlier_stars(d_train,
+                           sigma_clip_teff=4.,
+                           sigma_clip_logg=4.,
+                           sigma_clip_feh=4.,
+                           sigma_clip_plx=4.,
+                           sigma_clip_E=np.inf):
+    n_stars = d_train['stellar_type_est'].shape[0]
+    idx_good = np.ones(n_stars, dtype='bool')
+
+    dparam = (
+        (d_train['stellar_type_est']-d_train['stellar_type'])
+      / d_train['stellar_type_err']
+    )
+    dplx = (d_train['plx_est']-d_train['plx']) / d_train['plx_err']
+    dE = (
+        (d_train['stellar_ext_est']-d_train['stellar_ext'])
+      / d_train['stellar_ext_err']
+    )
+
+    sigma_clip_param = np.array([
+        sigma_clip_teff,sigma_clip_logg,sigma_clip_feh
+    ])
+    idx_good &= np.all(np.abs(dparam) < sigma_clip_param[None,:], axis=1)
+    idx_good &= (np.abs(dplx) < sigma_clip_plx)
+    idx_good &= (np.abs(dE) < sigma_clip_E)
+
+    return idx_good
+
+
+def identify_flux_outliers(data,
+                           stellar_model,
+                           chi2_dof_clip=4.,
+                           chi_indiv_clip=None):
+    n_stars = data['stellar_type_est'].shape[0]
+    idx_good = np.ones(n_stars, dtype='bool')
+    
+    length = len(data[f'xi_est'])
+    flux_chi = np.zeros(data['flux'].shape)
+    for i in tqdm(range(int(length/10000))):
+        flux_pred = stellar_model.predict_obs_flux(
+            data[f'stellar_type_est'][i*10000: (i+1)*10000],
+            data[f'xi_est'][i*10000: (i+1)*10000],
+            data[f'stellar_ext_est'][i*10000: (i+1)*10000],
+            data[f'plx_est'][i*10000: (i+1)*10000]
+        ).numpy()
+        flux_err = data['flux_err'][i*10000 : (i+1)*10000]
+        flux = data['flux'][i*10000 : (i+1)*10000]
+        flux_chi[i*10000 : (i+1)*10000] = (flux_pred - flux) / flux_err
+
+    chi2_dof = np.nanmean(flux_chi**2, axis=1)
+    idx_good &= (chi2_dof < chi2_dof_clip)
+
+    if chi_indiv_clip is not None:
+        if hasattr(chi_indiv_clip, '__len__'):
+            idx_good &= np.all((np.abs(flux_chi)<chi_indiv_clip[None]),axis=1)
+        else:
+            idx_good &= np.all((np.abs(flux_chi)<chi_indiv_clip),axis=1)
+
+    return idx_good
+
+
+def train_stellar_model(stellar_model,
+                        d_train, d_val,
+                        extra_weight,
+                        idx_train=None,
+                        optimize_stellar_model=True,
+                        optimize_stellar_params=False,
+                        batch_size=128, n_epochs=32,
+                        lr_stars_init=1e-3,
+                        lr_model_init=1e-4,
+                        model_update = ['stellar_model','ext_curve_w', 'ext_curve_b'],
+                        var_update = ['atm','E','plx','xi'],
+                       ):
+    
+    # Make arrays to hold estimated stellar types
+    type_est = d_train['stellar_type_est'].copy()
+    ln_ext_est = np.log(np.clip(d_train['stellar_ext_est'], 1.e-4, np.inf))
+    ln_plx_est = np.log(np.clip(d_train['plx_est'], 1.e-6, np.inf))
+    xi_est = d_train['xi_est'].copy()
+    flux_err = d_train['flux_err'].copy()
+
+    # Get training data iterator and determine # of batches
+    n_train = len(d_train['plx'])
+    if idx_train is None:
+        idx_train = np.arange(n_train)
+    n_sel = len(idx_train)
+    print(f'Training on {n_sel} ({n_sel/n_train*100:.2f}%) sources.')
+    batches, n_batches = get_batch_iterator(idx_train, batch_size, n_epochs)
+
+    # Optimizer for stellar model and extinction curve
+    n_drops = 4
+    lr_model = keras.optimizers.schedules.PiecewiseConstantDecay(
+        [int(n_batches*k/n_drops) for k in range(1,n_drops)],
+        [lr_model_init*(0.1**k) for k in range(n_drops)]
+    )
+    opt_model = keras.optimizers.SGD(learning_rate=lr_model, momentum=0.5)
+    #opt_model = keras.optimizers.Adam(learning_rate=1e-4)
+
+    @tf.function
+    def grad_step_stellar_model(type_b, xi_b, ext_b, 
+                                plx_b, flux_b, flux_sqrticov_b, 
+                                extra_weight_b,
+                                model_update=model_update):
+        print('Tracing grad_step_stellar_model ...')
+        loss, variables, grads = grads_stellar_model(
+            stellar_model,
+            type_b, xi_b, 
+            ext_b, plx_b,
+            flux_b, flux_sqrticov_b,
+            extra_weight_b,
+            model_update=model_update, 
+        )
+        grads_clipped, grads_norm = tf.clip_by_global_norm(
+            grads, 1000.
+        )
+        opt_model.apply_gradients(zip(grads_clipped, variables))
+
+        return loss, grads_norm
+
+    # Optimizer for stellar parameters.
+    # No momentum, because different stellar parameters fit each batch,
+    # so direction of last step is irrelevant.
+    n_drops = 4
+    lr_stars = keras.optimizers.schedules.PiecewiseConstantDecay(
+        [int(n_batches*k/n_drops) for k in range(1,n_drops)],
+        [lr_stars_init*(0.1**k) for k in range(n_drops)]
+    )
+    opt_st_params = keras.optimizers.SGD(learning_rate=lr_stars, momentum=0.)
+
+    st_type_dim = d_train['stellar_type'].shape[1]
+    type_est_batch = tf.Variable(
+        tf.zeros([batch_size,st_type_dim], dtype=tf.float32),
+        name='type_est_batch'
+    )
+    xi_est_batch = tf.Variable(
+        tf.zeros([batch_size], dtype=tf.float32),
+        name='xi_est_batch'
+    )
+    ln_ext_est_batch = tf.Variable(
+        tf.zeros([batch_size], dtype=tf.float32),
+        name='ln_ext_est_batch'
+    )
+    ln_plx_est_batch = tf.Variable(
+        tf.zeros([batch_size], dtype=tf.float32),
+        name='ln_plx_est_batch'
+    )
+
+    @tf.function
+    def grad_step_stellar_params(type_b, type_obs_b, type_sigma_b,
+                                 xi_b, 
+                                 ln_ext_b, ext_obs_b, ext_sigma_b,
+                                 ln_plx_b, plx_obs_b, plx_sigma_b,
+                                 flux_b, flux_sqrticov_b,
+                                 extra_weight_b,
+                                 var_update=var_update,
+                                ):
+        print('Tracing grad_step_stellar_params ...')
+        loss, variables, grads = grads_stellar_params(
+            stellar_model,
+            type_b, type_obs_b, type_sigma_b,
+            xi_b, 
+            ln_ext_b, ext_obs_b, ext_sigma_b,
+            ln_plx_b, plx_obs_b, plx_sigma_b,
+            flux_b, flux_sqrticov_b,
+            extra_weight_b,
+            var_update=var_update,
+        )
+        grads_clipped = [tf.clip_by_norm(g, 1000.) for g in grads]
+        opt_st_params.apply_gradients(zip(grads_clipped, variables))
+        return loss
+
+    model_loss_hist = []
+    stellar_loss_hist = []
+    chi_w1_hist = []
+    chi_w2_hist = []
+    slope_record = []
+    bias_record = []
+
+    pbar = tqdm(batches, total=n_batches)
+    for b in pbar:
+        # Load in data for this batch
+        idx = b.numpy()
+
+        type_est_batch.assign(type_est[idx])
+        ext_est_batch = tf.constant(np.exp(ln_ext_est[idx]))
+        plx_est_batch = tf.constant(np.exp(ln_plx_est[idx]))
+        xi_est_batch.assign(xi_est[idx])
+        flux_err_batch = flux_err[idx]
+        extra_weight_batch = tf.constant(extra_weight[idx])
+
+        if optimize_stellar_params:
+            type_obs_batch = tf.constant(d_train['stellar_type'][idx])
+            type_err_batch = tf.constant(d_train['stellar_type_err'][idx])
+
+            ln_ext_est_batch.assign(ln_ext_est[idx])
+            ext_obs_batch = tf.constant(d_train['stellar_ext'][idx])
+            ext_err_batch = tf.constant(d_train['stellar_ext_err'][idx])
+
+            ln_plx_est_batch.assign(ln_plx_est[idx])
+            plx_obs_batch = tf.constant(d_train['plx'][idx])
+            plx_err_batch = tf.constant(d_train['plx_err'][idx])
+            
+
+        flux_batch = tf.constant(d_train['flux'][idx])
+        flux_sqrticov_batch = tf.constant(d_train['flux_sqrticov'][idx])
+
+        pbar_disp = {}
+
+        # Take a step in the model parameters
+        if optimize_stellar_model:
+            loss, grads_norm = grad_step_stellar_model(
+                type_est_batch, xi_est_batch, 
+                ext_est_batch, plx_est_batch,
+                flux_batch, flux_sqrticov_batch,
+                extra_weight_batch,
+                model_update=model_update,
+            )
+            mod_loss = float(loss.numpy())
+            model_loss_hist.append(mod_loss)
+            pbar_disp['mod_loss'] = mod_loss
+
+            chi_w1, chi_w2 = chi_band(stellar_model, 
+                            #tf.constant(np.array([64, 65], dtype='int')), 
+                            type_est_batch, xi_est_batch, 
+                            ext_est_batch, plx_est_batch,
+                            flux_batch, flux_err_batch,
+            ).T
+            chi_w1_hist.append(np.mean(chi_w1))
+            chi_w2_hist.append(np.mean(chi_w2))
+            slope_record.append(stellar_model._ext_slope.numpy()[0])
+            bias_record.append(stellar_model._ext_bias.numpy()[0])
+            #pbar_disp['mod_lr'] = opt_model._decayed_lr(tf.float32).numpy()
+
+        # Take a step in the stellar paramters (for this batch)
+        if optimize_stellar_params:
+            loss = grad_step_stellar_params(
+                type_est_batch, type_obs_batch, type_err_batch,
+                xi_est_batch, 
+                ln_ext_est_batch, ext_obs_batch, ext_err_batch,
+                ln_plx_est_batch, plx_obs_batch, plx_err_batch,
+                flux_batch, flux_sqrticov_batch,
+                extra_weight_batch,
+                var_update=var_update,
+            )
+            st_loss = float(np.median(loss.numpy()))
+            stellar_loss_hist.append(st_loss)
+            pbar_disp['st_loss'] = st_loss
+            #pbar_disp['st_lr'] = opt_st_params._decayed_lr(tf.float32).numpy()
+
+            # Update estimated stellar parameters (for this batch)
+            type_est[idx] = type_est_batch.numpy()
+            xi_est[idx] = xi_est_batch.numpy()
+            ln_ext_est[idx] = ln_ext_est_batch.numpy()
+            ln_plx_est[idx] = ln_plx_est_batch.numpy()
+
+        # Display losses in progress bar
+        pbar.set_postfix(pbar_disp)
+
+    ret = {}
+
+    if optimize_stellar_model:
+        ret['model_loss'] = model_loss_hist
+        ret['chi_w1'] = chi_w1_hist
+        ret['chi_w2'] = chi_w2_hist
+        ret['ext_slope'] = np.vstack(slope_record)
+        ret['ext_bias'] = np.vstack(bias_record)
+
+    if optimize_stellar_params:
+        ret['stellar_loss'] = stellar_loss_hist
+        d_train['stellar_type_est'] = type_est
+        d_train['xi_est'] = xi_est
+        d_train['stellar_ext_est'] = np.exp(ln_ext_est)
+        d_train['plx_est'] = np.exp(ln_plx_est)
+        ret['chi_w1'] = chi_w1_hist
+        ret['chi_w2'] = chi_w2_hist
+
+    return ret
+
+
+class GaussianMixtureModel(snt.Module):
+    def __init__(self, n_dim, n_components=5):
+        super(GaussianMixtureModel, self).__init__(name='gauss_mix_model')
+
+        self._n_dim = n_dim
+        self._n_components = n_components
+
+        #self._n_components = tf.Variable(
+        #    n_components,
+        #    name='n_components',
+        #    dtype=tf.int32,
+        #    trainable=False
+        #)
+        self._weight = tf.Variable(
+            tf.zeros([n_components]),
+            name='weight',
+            dtype=tf.float32,
+            trainable=False
+        )
+        self._ln_norm = tf.Variable(
+            tf.zeros([1,n_components]),
+            name='ln_norm',
+            dtype=tf.float32,
+            trainable=False
+        )
+        self._mean = tf.Variable(
+            tf.zeros([1,n_components,n_dim]),
+            name='mean',
+            dtype=tf.float32,
+            trainable=False
+        )
+        self._sqrt_icov = tf.Variable(
+            tf.zeros([1,n_components,n_dim,n_dim]),
+            name='sqrt_icov',
+            dtype=tf.float32,
+            trainable=False
+        )
+        self._sqrt_cov = tf.Variable(
+            tf.zeros([n_components,n_dim,n_dim]),
+            name='sqrt_cov',
+            dtype=tf.float32,
+            trainable=False
+        )
+
+    def save(self, checkpoint_name):
+        # Checkpoint Tensorflow Variables
+        checkpoint = tf.train.Checkpoint(gauss_mix_model=self)
+        checkpoint.save(checkpoint_name)
+
+    @classmethod
+    def load(cls, checkpoint_name, latest=False):
+        if latest:
+            checkpoint_name = tf.train.latest_checkpoint(checkpoint_name)
+            print(f'Latest checkpoint: {checkpoint_name}')
+
+        # Inspect checkpoint to find input arguments
+        spec = {}
+        for vname,vshape in tf.train.list_variables(checkpoint_name):
+            if vname.startswith('gauss_mix_model/_mean/'):
+                print(vname)
+                print(vshape)
+                _,spec['n_components'],spec['n_dim'] = vshape
+
+        print('Found checkpoint with following specifications:')
+        print(json.dumps(spec, indent=2))
+
+        # Create model
+        gauss_mix_model = cls(spec['n_dim'], n_components=spec['n_components'])
+
+        # Restore variables
+        checkpoint = tf.train.Checkpoint(gauss_mix_model=gauss_mix_model)
+        checkpoint.restore(checkpoint_name)
+
+        return gauss_mix_model
+
+    def fit(self, x):
+        from sklearn.mixture import GaussianMixture
+        gmm = GaussianMixture(n_components=self._n_components)
+        gmm.fit(x)
+
+        ln_cov_det = [np.linalg.slogdet(c)[1] for c in gmm.covariances_]
+        ln_norm = np.stack([
+            np.log(w)-0.5*d for w,d in zip(gmm.weights_,ln_cov_det)
+        ])
+        ln_norm.shape = (1,) + ln_norm.shape
+        self._ln_norm.assign(ln_norm)
+        self._weight.assign(gmm.weights_)
+        print(self._weight)
+
+        mu = np.reshape(gmm.means_, (1,)+gmm.means_.shape)
+        self._mean.assign(mu)
+
+        sqrt_icov = []
+        sqrt_cov = []
+        for c in gmm.covariances_:
+            U,sqrt_c,(eival0,_) = sqrt_icov_eigen(c, return_sqrtcov=True)
+            if eival0 <= 0.:
+                print(f'Non-positive eigenvalue(s) in GMM cov! {eival0} <= 0.')
+            sqrt_icov.append(U.T)
+            sqrt_cov.append(sqrt_c)
+        sqrt_icov = np.stack(sqrt_icov)
+        sqrt_icov.shape = (1,) + sqrt_icov.shape
+        sqrt_cov = np.stack(sqrt_cov)
+        self._sqrt_icov.assign(sqrt_icov)
+        self._sqrt_cov.assign(sqrt_cov)
+
+    def ln_prob(self, x):
+        # Expand dimensions of x to be consistent with (star, component, dim)
+        x = tf.expand_dims(x, axis=1) # Dummy component axis
+
+        # Calculate ln(p) of each component
+        dx = x - self._mean # shape = (star, comp, dim)
+        # shape = (star, comp, dim):
+        sqrt_icov_dx = tf.linalg.matvec(self._sqrt_icov, dx)
+        # shape = (star, comp):
+        chi2 = tf.reduce_sum(sqrt_icov_dx*sqrt_icov_dx, axis=2)
+        lnp_comp = self._ln_norm - 0.5*chi2 # shape = (star, comp)
+
+        # Sum the probabilities of the components and take the log
+        lnp = tf.reduce_logsumexp(lnp_comp, axis=1) # shape = (star,)
+
+        return lnp
+
+    def sample(self, n, rng=None):
+        if rng is None:
+            rng = np.random.default_rng()
+        # Draw component indices. Shape = (sample,)
+        comp_idx = rng.choice(
+            np.arange(self._n_components),
+            p=self._weight.numpy(),
+            size=n
+        )
+        # Draw unit normal vectors. Shape = (sample, dim).
+        v = rng.normal(size=(n,self._n_dim)).astype('f4')
+        # Transform unit normal vectors. Shape = (sample, dim).
+        Av = np.einsum(
+            'sij,sj->si',
+            self._sqrt_cov.numpy()[comp_idx,:,:], v,
+            optimize=True
+        )
+        # Add in means. Shape = (sample, dim).
+        z = self._mean.numpy()[0,comp_idx,:] + Av
+        return z
+
+
+def plot_gmm_prior(stellar_type_prior):
+    # Plot samples from prior
+    import corner
+
+    n_comp = stellar_type_prior._n_components
+    params = stellar_type_prior.sample(1024**2*10)
+
+    labels = [
+        r'$T_{\mathrm{eff}}$',
+        r'$\left[\mathrm{Fe/H}\right]$',
+        r'$\log g$',
+    ]
+
+    ranges = [
+        (14., 2.),
+        (-2.5, 1.),
+        (5.5, 0.)
+    ]
+    
+
+    fig,ax = corner.corner(
+        params,
+        labels=labels,
+        range=ranges,
+        bins=100,
+        quantiles=[0.16, 0.5, 0.84],
+        levels=[0.68,0.95,0.99],
+        show_titles=True,
+        pcolor_kwargs = {'cmap':cm.Blues}
+    )
+
+    fig.savefig(f'plots/stellar_prior_samples_{n_comp:02d}components')
+    plt.close(fig)
+
+    # Plot 2D marginal distributions of prior
+    param_ranges = [np.linspace(r0,r1,50+k) for k,(r0,r1) in enumerate(ranges)]
+    param_grid = np.meshgrid(*param_ranges, indexing='ij')
+    param_grid = np.stack(param_grid, axis=3)
+    s = param_grid.shape[:3]
+    param_grid.shape = (-1,3)
+    param_grid = tf.constant(param_grid.astype('f4'))
+
+    lnp = stellar_type_prior.ln_prob(param_grid).numpy()
+    lnp.shape = s
+
+    fig,ax_arr = plt.subplots(1,3, figsize=(6,2))
+
+    for k,ax in enumerate(ax_arr.flat):
+        labels_k = [l for i,l in enumerate(labels) if i != k]
+        ranges_k = [r for i,r in enumerate(ranges) if i != k]
+
+        lnp_marginal = logsumexp(lnp, axis=k)
+        lnp_marginal -= np.max(lnp_marginal)
+
+        ax.imshow(
+            np.exp(lnp_marginal.T),
+            origin='lower',
+            extent=ranges_k[0]+ranges_k[1],
+            interpolation='nearest',
+            aspect='auto'
+        )
+
+        ax.set_xlabel(labels_k[0])
+        ax.set_ylabel(labels_k[1])
+        ax.set_xlim(ranges_k[0])
+        ax.set_ylim(ranges_k[1])
+
+    fig.subplots_adjust(
+        left=0.06,
+        right=0.98,
+        bottom=0.17,
+        top=0.95,
+        wspace=0.32
+    )
+
+    fig.savefig(f'plots/stellar_prior_marginals_{n_comp:02d}components')
+    plt.close(fig)
+
+
+def grid_search_stellar_params(flux_model, data,
+                               gmm_prior=None, rng=None,
+                               batch_size=128):
+    # Set up stellar type grid
+    if gmm_prior is not None:
+        type_grid = gmm_prior.sample(128, rng=rng)
+    else:
+        teff_range = np.arange(3., 9.01, 2.0, dtype='f4')
+        feh_range = np.arange(-1.5, 0.501, 1.0, dtype='f4')
+        logg_range = np.arange(-1.0, 5.01, 0.5, dtype='f4')
+        teff_grid,feh_grid,logg_grid = np.meshgrid(
+            teff_range, feh_range, logg_range
+        )
+        teff_grid.shape = (-1,)
+        feh_grid.shape = (-1,)
+        logg_grid.shape = (-1,)
+        type_grid = np.stack([teff_grid,feh_grid,logg_grid], axis=1)
+
+    # Cartesian product with extinction grid
+    ext_range = 10**np.arange(-2.0, 1.01, 0.1, dtype='f4')
+    idx_ext, idx_type = np.indices((ext_range.size, type_grid.shape[0]))
+    ext_grid = ext_range[idx_ext]
+    type_grid = type_grid[idx_type]
+
+    type_grid.shape = (-1,3)
+    ext_grid.shape = (-1,)
+    plx_grid = np.ones_like(ext_grid)
+
+    # Calculate model flux over parameter grid, assuming plx = 1 mas
+    flux_grid = flux_model.predict_obs_flux(type_grid, np.zeros(ext_grid.shape, dtype='float32'), ext_grid,plx_grid)
+    flux_grid_exp = tf.expand_dims(flux_grid, 1) # Shape = (param, 1, wavelength)
+
+    n_stars = len(data['plx'])
+
+    # Empty Tensors to hold batches of observed data
+    n_wl = data['flux'].shape[1]
+    flux_obs_b = tf.Variable(tf.zeros((batch_size,n_wl)))
+    flux_sqrticov_b = tf.Variable(tf.zeros((batch_size,n_wl,n_wl)))
+    plx_obs_b = tf.Variable(tf.zeros((batch_size,)))
+    plx_sigma_b = tf.Variable(tf.zeros((batch_size,)))
+
+    @tf.function
+    def determine_best_param_idx():
+        print('Tracing determine_best_param_idx() ...')
+        
+        # Insert dummy stellar parameter axis into observations
+        # Shape = (1, star, wavelength)
+        flux_obs_b_exp = tf.expand_dims(flux_obs_b, 0)
+        # Shape = (1, star, wavelength, wavelength)
+        flux_sqrticov_b_exp = tf.expand_dims(flux_sqrticov_b, 0)
+        # Shape = (1, star)
+        plx_obs_b_exp = tf.expand_dims(plx_obs_b, 0)
+        # Shape = (1, star)
+        plx_sigma_b_exp = tf.expand_dims(plx_sigma_b, 0)
+
+        # Easy to guess decent parallax, by looking at flux ratio.
+        # Only use middle third of spectrum, as the edges are noisier.
+        # Would like to use median (which is available through
+        # tensorflow_probability), but it is significantly slower than
+        # mean.
+        _,flux_obs_b_core,_ = tf.split(flux_obs_b_exp, 3, axis=2)
+        _,flux_grid_core,_ = tf.split(flux_grid_exp, 3, axis=2)
+        # ReLU ensures non-negativity inside sqrt:
+        plx_b = tf.math.sqrt(tf.reduce_mean(
+            tf.nn.relu(flux_obs_b_core / flux_grid_core),
+            axis=2,
+            keepdims=True
+        )) # Shape = (param, star, 1)
+
+        # Calculate chi^2
+        # Shape = (param, star, wavelength)
+        dflux = flux_grid_exp * plx_b**2 - flux_obs_b_exp
+        # Shape = (param, star, wavelength)
+        sqrticov_dflux = tf.linalg.matvec(flux_sqrticov_b_exp, dflux)
+        # Shape = (param, star)
+        chi2 = tf.reduce_sum(sqrticov_dflux*sqrticov_dflux, axis=2)
+
+        #tf.print('NaN chi2:', tf.math.count_nonzero(tf.math.is_nan(chi2)))
+        #tf.print('neg flux_obs_core:', tf.math.count_nonzero(tf.math.is_nan(flux_obs_b_core/flux_grid_core)))
+        #tf.print('NaN flux ratio:', tf.math.count_nonzero(tf.math.is_nan(flux_obs_b_core/flux_grid_core)))
+        #tf.print('NaN plx:', tf.math.count_nonzero(tf.math.is_nan(plx_b)))
+        #tf.print('NaN flux_obs:', tf.math.count_nonzero(tf.math.is_nan(flux_obs_b_exp)))
+        #tf.print('NaN flux_grid:', tf.math.count_nonzero(tf.math.is_nan(flux_grid_exp)))
+        #tf.print('NaN dflux:', tf.math.count_nonzero(tf.math.is_nan(dflux)))
+        #tf.print('NaN flux_sqrticov:', tf.math.count_nonzero(tf.math.is_nan(flux_sqrticov_b_exp)))
+        #tf.print('NaN sqrticov_dflux:', tf.math.count_nonzero(tf.math.is_nan(sqrticov_dflux)))
+
+        # Add in prior term for parallax
+        prior = gaussian_prior(
+            tf.squeeze(plx_b, axis=2),
+            plx_obs_b_exp,
+            plx_sigma_b_exp
+        )
+        #tf.print('NaN prior:', tf.math.count_nonzero(tf.math.is_nan(prior)))
+        chi2 = chi2 + prior
+
+        # Determine best chi^2 (+prior) per star
+        pidx_best_b = tf.math.argmin(chi2, axis=0) # Shape = (star,)
+        chi2_best_b = tf.math.reduce_min(chi2, axis=0) # Shape = (star,)
+
+        return pidx_best_b, chi2_best_b, plx_b
+
+    param_idx_best = []
+    chi2_best = []
+    plx_best = []
+
+    pbar = tqdm(range(0, n_stars, batch_size))
+    for i0 in pbar:
+        # Load in data for this batch
+        i1 = min(i0+batch_size, n_stars) # Actual final idx of batch
+        idx = slice(i0, i1)
+        idx0 = slice(0, i1-i0) # Goes from 0 to actual batch size
+
+        assign_variable_padded(flux_obs_b, data['flux'][idx])
+        assign_variable_padded(flux_sqrticov_b, data['flux_sqrticov'][idx])
+        assign_variable_padded(plx_obs_b, data['plx'][idx])
+        assign_variable_padded(plx_sigma_b, data['plx_err'][idx], fill=1)
+
+        # Locate best fit
+        pidx_best, chi2, plx = determine_best_param_idx()
+
+        pidx_best = pidx_best.numpy()
+        chi2 = chi2.numpy()
+
+        # Extract best parallax (array w/ 1 plx per param value was returned)
+        plx = plx.numpy()
+        plx = plx[pidx_best, np.arange(plx.shape[1]), 0]
+
+        param_idx_best.append(pidx_best[idx0])
+        chi2_best.append(chi2[idx0])
+        plx_best.append(plx[idx0])
+
+        chi2_pct = np.percentile(chi2[idx0],[5.,50.,95., 99.])
+        chi2_str = '('+','.join([f'{c:.1f}' for c in chi2_pct])+')'
+        pbar.set_postfix({
+            'chi2_{5,50,95,99}': chi2_str
+        })
+
+        idx_bad = np.where(~np.isfinite(chi2[idx0]))[0]
+        if len(idx_bad):
+            print('plx_opt:', plx[idx_bad])
+            print('plx_obs:', data['plx'][idx][idx_bad])
+            print('plx_err:', data['plx_err'][idx][idx_bad])
+            print('mean flux:', np.mean(data['flux'][idx][idx_bad], axis=1))
+            n_flux_bad = np.count_nonzero(
+                ~np.isfinite(data['flux'][idx][idx_bad]),
+                axis=1
+            )
+            print('NaN flux:', n_flux_bad)
+            n_sqrticov_bad = np.sum(
+                np.count_nonzero(
+                    ~np.isfinite(data['flux_sqrticov'][idx][idx_bad]),
+                    axis=1
+                ),
+                axis=1
+            )
+            print('NaN flux_sqrticov:', n_sqrticov_bad)
+
+    param_idx_best = np.hstack(param_idx_best)
+    chi2_best = np.hstack(chi2_best)
+    plx_best = np.hstack(plx_best)
+
+    type_best = type_grid[param_idx_best]
+    ext_best = ext_grid[param_idx_best]
+
+    data['stellar_type_est'] = type_best
+    data['stellar_ext_est'] = ext_best
+    data['plx_est'] = plx_best #data['plx'].copy()
+
+
+def optimize_stellar_params(flux_model, data,
+                            n_steps=64*1024,
+                            lr_init=0.01,
+                            reduce_lr_every=16*1024,
+                            batch_size=4096,
+                            optimizer='adam',
+                            use_prior=None,
+                            optimize_subset=None):
+    if 'stellar_type' in data:
+        n_type = data['stellar_type'].shape[1]
+    else:
+        n_type = 3
+    n_wl = data['flux'].shape[1]
+
+    # Initial values of ln(extinction) and ln(parallax)
+    ln_stellar_ext_all = np.log(np.clip(data['stellar_ext_est'], 1e-9, np.inf))
+    ln_stellar_plx_all = np.log(np.clip(data['plx_est'], 1e-9, np.inf))
+    xi_all = data['xi_est'].copy()
+    
+
+    # Empty Tensors to hold batches of stellar parameters
+    st_type_b = tf.Variable(tf.zeros((batch_size,n_type)))
+    ln_ext_b = tf.Variable(tf.zeros((batch_size,)))
+    ln_plx_b = tf.Variable(tf.zeros((batch_size,)))
+    xi_b = tf.Variable(tf.zeros((batch_size,)))
+
+    # Empty Tensors to hold batches of observed data
+    flux_obs_b = tf.Variable(tf.zeros((batch_size,n_wl)))
+    flux_sqrticov_b = tf.Variable(tf.zeros((batch_size,n_wl,n_wl)))
+    plx_obs_b = tf.Variable(tf.zeros((batch_size,)))
+    plx_sigma_b = tf.Variable(tf.zeros((batch_size,)))
+    ext_obs_b = tf.Variable(tf.zeros((batch_size,)))
+    ext_sigma_b = tf.Variable(tf.zeros((batch_size,)))
+    if use_prior == 'observation':
+        st_type_obs_b = tf.Variable(tf.zeros((batch_size,n_type)))
+        st_type_sigma_b = tf.Variable(tf.zeros((batch_size,n_type)))
+
+    # Optimizers
+    if optimizer == 'adam':
+        opt = tf.keras.optimizers.Adam(learning_rate=lr_init)
+    else:
+        opt = tf.keras.optimizers.SGD(learning_rate=lr_init, momentum=0.)
+
+    def stellar_loss(use_pr='observation'):
+        # Convert quantities from log to linear scale
+        ext_b = tf.math.exp(ln_ext_b)
+        plx_b = tf.math.exp(ln_plx_b)
+        # Calculate chi^2 of each star
+        chi2 = flux_model.calc_chi2(
+            st_type_b, xi_b, ext_b, plx_b,
+            flux_obs_b, flux_sqrticov_b
+        )
+        # We always have a parallax observation
+        prior_plx = (
+            gaussian_prior(plx_b, plx_obs_b, plx_sigma_b)
+          - 2*ln_plx_b # Jacobian of transformation from plx to ln(plx)
+        )
+        # Can always set a Gaussian prior on extinction (even if sigma -> inf)
+        prior_ext = (
+            gaussian_prior(ext_b, ext_obs_b, ext_sigma_b)
+          - 2*ln_ext_b # Jacobian of transformation from E to ln(E)
+        )
+        prior_xi = gaussian_prior(xi_b, 0, 1)*0.01
+        prior = prior_plx + prior_ext + prior_xi
+        # Stellar type prior: multiple options
+        prior_type = 0.
+        if use_pr == 'observation':
+            print('Using prior: observation')
+            prior_type = tf.math.reduce_sum(
+                gaussian_prior(st_type_b, st_type_obs_b, st_type_sigma_b),
+                axis=1
+            )
+        elif isinstance(use_pr, GaussianMixtureModel):
+            print('Using prior: GMM')
+            prior_type = -2. * use_prior.ln_prob(st_type_b)
+        elif use_pr is None:
+            print('Using prior: None (chi^2 only)')
+            prior_type = 0.
+        else:
+            raise ValueError(
+                f'Invalid <use_prior> value ("{use_prior}")'
+                ' - can be None, "observation" or a GaussianMixtureModel.'
+            )
+        #tf.print(prior_type)
+        prior = prior + prior_type
+        # Combine chi^2 and prior
+        loss = chi2 + prior
+        return loss
+
+    @tf.function
+    def step(use_pr='observation'):
+        print('Tracing step() ...')
+        variables = [st_type_b, xi_b, ln_plx_b, ln_ext_b]
+        with tf.GradientTape(watch_accessed_variables=False) as g:
+            g.watch(variables)
+            loss = stellar_loss(use_pr=use_pr)
+        grads = g.gradient(loss, variables)
+        
+        norm = tf.zeros_like(loss)
+        for g in grads:
+            if len(g.shape) == 2:
+                norm += tf.reduce_sum(g**2, axis=1)
+            else:
+                norm += g**2
+        norm = tf.math.sqrt(norm)
+        #tf.print('norm:')
+        #tf.print(norm)
+        inorm = tf.clip_by_value(100/norm, 0, 1)
+        processed_grads = []
+        for g in grads:
+            if len(g.shape) == 2:
+                processed_grads.append(g*tf.expand_dims(inorm, 1))
+            else:
+                processed_grads.append(g*inorm)
+
+        opt.apply_gradients(zip(processed_grads, variables))
+              
+        #processed_grads = [tf.clip_by_norm(g, 100.) for g in grads]
+        #opt.apply_gradients(zip(grads, variables))
+        return loss
+
+    if optimize_subset is None:
+        n_stars = len(data['plx'])
+    else:
+        n_stars = optimize_subset.size
+
+    for i0 in tqdm(range(0, n_stars, batch_size)):
+        # Load in data for this batch
+        if optimize_subset is None:
+            i1 = min(i0+batch_size, n_stars) # Actual final idx of batch
+            idx = slice(i0, i1)
+            batch_size_actual = i1 - i0
+        else:
+            idx = optimize_subset[i0:i0+batch_size]
+            batch_size_actual = idx.size
+        idx0 = slice(0, batch_size_actual) # Goes from 0 to actual batch size
+
+        # Initial stellar parameter values
+        assign_variable_padded(st_type_b, data['stellar_type_est'][idx])
+        assign_variable_padded(ln_ext_b, ln_stellar_ext_all[idx])
+        assign_variable_padded(ln_plx_b, ln_stellar_plx_all[idx])
+        assign_variable_padded(xi_b, xi_all[idx])
+
+        # Observed data
+        assign_variable_padded(flux_obs_b, data['flux'][idx])
+        assign_variable_padded(flux_sqrticov_b, data['flux_sqrticov'][idx])
+        assign_variable_padded(plx_obs_b, data['plx'][idx])
+        assign_variable_padded(plx_sigma_b, data['plx_err'][idx], fill=1)
+        assign_variable_padded(ext_obs_b, data['stellar_ext'][idx])
+        assign_variable_padded(
+            ext_sigma_b,
+            data['stellar_ext_err'][idx],
+            fill=1
+        )
+        if use_prior == 'observation':
+            assign_variable_padded(st_type_obs_b, data['stellar_type'][idx])
+            assign_variable_padded(
+                st_type_sigma_b,
+                data['stellar_type_err'][idx],
+                fill=1
+            )
+
+        lr = lr_init
+        opt.learning_rate.assign(lr)
+
+        # Clear memory of optimizer, which is defined globally
+        for optvar in opt.variables():
+            optvar.assign(tf.zeros_like(optvar))
+
+        pbar = tqdm(range(n_steps))
+        for j in pbar:
+            loss = step(use_pr=use_prior)
+
+            # Decrease learning rate every set # of steps
+            if j % reduce_lr_every == reduce_lr_every-1:
+                lr = lr * 0.5 # Careful not to change lr_init!
+                opt.learning_rate.assign(lr)
+
+            # Show the loss and learning rate in the progress bar
+            loss_pct = np.percentile(loss[idx0], [5., 50., 95., 99.])
+            loss_str = '('+','.join([f'{c:.1f}' for c in loss_pct])+')'
+            pbar.set_postfix({
+                'loss_{5,50,95,99}': loss_str,
+                'lr': lr
+            })
+
+        idx_bad = ~np.isfinite(loss[idx0])
+        if np.any(idx_bad):
+            idx_bad = np.where(idx_bad)[0]
+            print('Non-finite loss!')
+            print('Initial guesses:')
+            type_guess = data['stellar_type_est'][idx][idx_bad]
+            ext_guess = data['stellar_ext_est'][idx][idx_bad]
+            plx_guess = data['plx_est'][idx][idx_bad]
+            print('  * stellar type:', type_guess)
+            print('  * extinction:', ext_guess)
+            print('  * parallax:', plx_guess)
+            type_bounds = np.min(type_guess,axis=0), np.max(type_guess,axis=0)
+            ext_bounds = np.min(ext_guess), np.max(ext_guess)
+            plx_bounds = np.min(plx_guess), np.max(plx_guess)
+            print('  - stellar type bounds:', type_bounds)
+            print('  - extinction bounds:', ext_bounds)
+            print('  - parallax bounds:', plx_bounds)
+            print('Optimized values:')
+            type_opt = st_type_b.numpy()[idx_bad]
+            ext_opt = ln_ext_b.numpy()[idx_bad]
+            plx_opt = ln_plx_b.numpy()[idx_bad]
+            print('  * stellar type:', type_opt)
+            print('  * extinction:', ext_opt)
+            print('  * parallax:', plx_opt)
+            type_bounds = np.min(type_opt,axis=0), np.max(type_opt,axis=0)
+            ext_bounds = np.min(ext_opt), np.max(ext_opt)
+            plx_bounds = np.min(plx_opt), np.max(plx_opt)
+            print('  - stellar type bounds:', type_bounds)
+            print('  - extinction bounds:', ext_bounds)
+            print('  - parallax bounds:', plx_bounds)
+            print('Data:')
+            ext_bounds = np.min(ext_obs_b.numpy()), np.max(ext_obs_b.numpy())
+            plx_bounds = np.min(plx_obs_b.numpy()), np.max(plx_obs_b.numpy())
+            flux_nonfinite = np.count_nonzero(~np.isfinite(flux_obs_b.numpy()))
+            cov_nonfinite = np.count_nonzero(~np.isfinite(flux_sqrticov_b.numpy()))
+            print(' - parallax bounds:', plx_bounds)
+            print(' - extinction bounds:', ext_bounds)
+            print(' - flux non-finite:', flux_nonfinite)
+            print(' - flux_sqrticov non-finite:', cov_nonfinite)
+
+        data['stellar_type_est'][idx] = st_type_b.numpy()[idx0]
+        data['stellar_ext_est'][idx] = np.exp(ln_ext_b.numpy()[idx0])
+        data['plx_est'][idx] = np.exp(ln_plx_b.numpy()[idx0])
+        data['xi_est'][idx] = xi_b.numpy()[idx0]
+        
+
+def assign_variable_padded(var, value, fill=0):
+    """
+    Assigns values to a tf.Variable from a numpy.ndarray.
+    If the numpy array is smaller along the batch axis (axis=0),
+    it will be zero-padded at the end to the same shape as the
+    Variable.
+    """
+    var_size = var.shape[0]
+    value_size = value.shape[0]
+    if var_size == value_size:
+        var.assign(value)
+    elif value_size < var_size:
+        value_padded = np.full(
+            var.shape, fill,
+            dtype=var.dtype.as_numpy_dtype()
+        )
+        value_padded[:value_size] = value
+        var.assign(value_padded)
+    else:
+        raise ValueError(
+            'value.shape[0] > var.shape[0]: '
+            f'({value.shape[0]} > {var.shape[0]})'
+        )
+
+
+def calc_stellar_fisher_hessian(stellar_model, data, gmm=None,
+                                batch_size=1024, ignore_wl=None):
+    n_sources,st_type_dim = data['stellar_type_est'].shape
+    n_wl = len(stellar_model.get_sample_wavelengths())
+
+    type_b = tf.Variable(
+        tf.zeros([batch_size,st_type_dim], dtype=tf.float32),
+        name='type_est_batch'
+    )
+    ext_b = tf.Variable(
+        tf.zeros([batch_size], dtype=tf.float32),
+        name='ext_est_batch'
+    )
+    plx_b = tf.Variable(
+        tf.zeros([batch_size], dtype=tf.float32),
+        name='plx_est_batch'
+    )
+    flux_obs_b = tf.Variable(
+        tf.zeros([batch_size,n_wl], dtype=tf.float32),
+        name='flux_batch'
+    )
+    flux_sqrticov_b = tf.Variable(
+        tf.zeros([batch_size,n_wl,n_wl], dtype=tf.float32),
+        name='flux_sqrticov_batch'
+    )
+
+    wl_mask = np.ones(n_wl, dtype='f4')
+    if ignore_wl is not None:
+        wl_mask[ignore_wl] = 0.
+    wl_mask.shape = (1,-1,1)
+    wl_mask = tf.constant(wl_mask, name='wavelength_mask')
+
+    @tf.function
+    def fisher_batch():
+        print('Tracing fisher_batch ...')
+
+        theta = tf.concat([
+            type_b,
+            tf.expand_dims(ext_b, axis=1),
+            tf.expand_dims(plx_b, axis=1)
+        ], axis=1)
+
+        with tf.GradientTape(watch_accessed_variables=False) as g:
+            g.watch(theta)
+
+            t,ext,plx = tf.split(theta, [3,1,1], axis=1)
+
+            ext = tf.squeeze(ext, axis=1)
+            plx = tf.squeeze(plx, axis=1)
+
+            # Calculate flux of each star
+            flux_pred = stellar_model.predict_obs_flux(t, ext, plx)
+
+        dflux_dtheta = g.batch_jacobian(flux_pred, theta)
+
+        dflux_dtheta = dflux_dtheta * wl_mask
+
+        # Left-multiply by sqrt(flux_icov)
+        A = tf.linalg.matmul(flux_sqrticov_b, dflux_dtheta)
+        #print('A.shape:', tf.shape(A))
+
+        fisher_I = tf.linalg.matmul(A, A, transpose_a=True)
+        #print('fisher_I.shape:', tf.shape(fisher_I))
+
+        return fisher_I
+
+    @tf.function
+    def hessian_batch():
+        print('Tracing hessian_batch ...')
+        theta = tf.concat([
+            type_b,
+            tf.expand_dims(ext_b, axis=1),
+            tf.expand_dims(plx_b, axis=1)
+        ], axis=1)
+
+        with tf.GradientTape(watch_accessed_variables=False,
+                             persistent=True) as g2:
+            g2.watch(theta)
+            with tf.GradientTape(watch_accessed_variables=False,
+                                 persistent=True) as g1:
+                g1.watch(theta)
+
+                t,ext,plx = tf.split(theta, [3,1,1], axis=1)
+                ext = tf.squeeze(ext, axis=1)
+                plx = tf.squeeze(plx, axis=1)
+
+                # Calculate chi^2 of each star
+                chi2 = stellar_model.calc_chi2(
+                    t, ext, plx,
+                    flux_obs_b, flux_sqrticov_b
+                )
+
+                # Calculate GMM prior for each star
+                if gmm is not None:
+                    ln_prior_gmm = gmm.ln_prob(t)
+
+            # Calculate d(chi^2)/d(variables). Separate gradient per star.
+            grads = g1.gradient(chi2, theta)
+            if gmm is not None:
+                grads_gmm = g1.gradient(ln_prior_gmm, theta)
+
+        hess = 0.5 * g2.batch_jacobian(grads, theta)
+        if gmm is not None:
+            hess_gmm = -1. * g2.batch_jacobian(grads_gmm, theta)
+        else:
+            hess_gmm = None
+
+        return grads, hess, hess_gmm, chi2
+
+    fisher_out = []
+    hessian_out = []
+    hessian_gmm_out = []
+    chi2_out = []
+    ivar_priors = []
+
+    for i0 in tqdm(range(0,n_sources,batch_size)):
+        # Load in data for this batch
+        i1 = min(i0+batch_size, n_sources)
+        idx = slice(i0, i1)
+        idx_zeroed = slice(0, i1-i0)
+
+        assign_variable_padded(type_b, data['stellar_type_est'][idx])
+        assign_variable_padded(ext_b, data['stellar_ext_est'][idx])
+        assign_variable_padded(plx_b, data['plx_est'][idx])
+        assign_variable_padded(flux_obs_b, data['flux'][idx])
+        assign_variable_padded(flux_sqrticov_b, data['flux_sqrticov'][idx])
+
+        if 'stellar_type_err' in data:
+            st_type_err = data['stellar_type_err'][idx]
+        else:
+            st_type_err = np.full((i1-i0,st_type_dim), np.inf, dtype='f4')
+
+        prior_std = np.concatenate([
+            st_type_err,
+            np.reshape(data['stellar_ext_err'][idx], (-1,1)),
+            np.reshape(data['plx_err'][idx], (-1,1))
+        ], axis=1)
+        ivar_priors.append(1/prior_std**2)
+
+        #if ignore_bands is not None:
+        #    for b in ignore_bands:
+        #        flux_sqrticov[:,ignore_bands,ignore_bands] = 0.
+
+        # Calculate Fisher matrix
+        ret = fisher_batch().numpy()
+        fisher_out.append(ret[idx_zeroed])
+
+        # Calculate Hessian matrix
+        ret_grads, ret_hess, ret_hess_gmm, ret_chi2 = hessian_batch()
+        hessian_out.append(ret_hess.numpy()[idx_zeroed])
+        if gmm is not None:
+            hessian_gmm_out.append(ret_hess_gmm.numpy()[idx_zeroed])
+        chi2_out.append(ret_chi2.numpy()[idx_zeroed])
+
+    fisher_out = np.concatenate(fisher_out, axis=0)
+    hessian_out = np.concatenate(hessian_out, axis=0)
+    if gmm is not None:
+        hessian_gmm_out = np.concatenate(hessian_gmm_out, axis=0)
+    chi2_out = np.concatenate(chi2_out)
+    ivar_priors = np.concatenate(ivar_priors, axis=0)
+
+    data['fisher'] = fisher_out
+    data['hessian'] = hessian_out
+    if gmm is not None:
+        data['hessian_gmm'] = hessian_gmm_out
+    data['ivar_priors'] = ivar_priors
+    data['chi2_opt'] = chi2_out
