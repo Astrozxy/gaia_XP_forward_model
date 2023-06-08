@@ -1507,3 +1507,44 @@ def calc_stellar_fisher_hessian(stellar_model, data, gmm=None,
         data['hessian_gmm'] = hessian_gmm_out
     data['ivar_priors'] = ivar_priors
     data['chi2_opt'] = chi2_out
+
+    
+def save_as_h5(d, name):
+    print(f'Saving as {name}')
+    with h5py.File(name, 'w') as f:
+        for key in d.keys():
+            f[key] = d[key]
+    return 0
+
+
+def load_h5(name):
+    print(f'Loading {name}')
+    d = {}
+    with h5py.File(name, 'r') as f:
+        for key in f.keys():
+            d[key] = f[key][:]
+    return d     
+    
+    
+def down_sample_weighing(x_ini, all_x, bin_edges):
+        # Use high-Extinction stars for empirical distribution of xi
+        bin_edges = np.hstack([[-np.inf], bin_edges, [np.inf]])
+        
+        # Calculate the emperical distribution of x_ini under the given bins
+        bin_indices = np.digitize(x_ini, bin_edges)
+        counts = np.bincount(bin_indices, minlength=n_bins+3)
+        weights = counts / counts.sum()  # convert counts to probabilities
+        weights_per_bin = 1./(weights+0.001)
+        
+        # Weigh all stars by the inverse of density of the ini sample
+        bin_indices_all = np.digitize(all_x, bin_edges)
+        weights_per_star = weights_per_bin[bin_indices_all]
+        
+        # Normalize the weights per star  by median value
+        weights_per_star /= np.median(weights_per_star)
+        
+        return weights_per_star.astype('float32')
+   
+    
+
+    
