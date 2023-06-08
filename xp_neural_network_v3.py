@@ -34,9 +34,9 @@ import json
 from glob import glob
 from tqdm import tqdm
 
-from xp_utils import XPSampler, sqrt_icov_eigen
-from plot_utils import plot_corr, plot_mollweide, \
-                       projection_grid, healpix_mean_map
+#from xp_utils import XPSampler, sqrt_icov_eigen
+#from plot_utils import plot_corr, plot_mollweide, \
+#                      projection_grid, healpix_mean_map
 
 from astropy_healpix import HEALPix
 from astropy.coordinates import SkyCoord
@@ -289,10 +289,10 @@ def grads_stellar_model(stellar_model,
     # Only want gradients of stellar model parameters and extinction curve
     trainable_var = []
     if 'stellar_model' in model_update:
-            trainable_var += [ f'flux_model/hidden_0/w:{i}',
+            trainable_var += [ f'flux_model/hidden_0/w:{i}'
                 for i in range(stellar_model._n_hidden)
             ]
-            trainable_var += [ f'flux_model/hidden_0/b:{i}',
+            trainable_var += [ f'flux_model/hidden_0/b:{i}'
                 for i in range(stellar_model._n_hidden)
             ]
             trainable_var += [
@@ -1508,6 +1508,94 @@ def calc_stellar_fisher_hessian(stellar_model, data, gmm=None,
     data['ivar_priors'] = ivar_priors
     data['chi2_opt'] = chi2_out
 
+def load_data(fname, type_err_floor=(0.02,0.02,0.02),
+              validation_frac=0.2, seed=1, n_max=None):
+    d_train, d_val = {}, {}
+    shuffle_idx, n_val = None, None
+
+    with h5py.File(fname, 'r') as f:
+        for key in f:
+            d = f[key][:n_max]
+
+            # Shuffle and split into training/validation sets
+            if shuffle_idx is None:
+                rng = np.random.default_rng(seed=seed)
+                shuffle_idx = np.arange(d.shape[0], dtype='i8')
+                rng.shuffle(shuffle_idx)
+                n_val = int(np.ceil(d.shape[0] * validation_frac))
+                d_train['shuffle_idx'] = shuffle_idx[:-n_val]
+                d_val['shuffle_idx'] = shuffle_idx[-n_val:]
+            d = d[shuffle_idx]
+            d_train[key] = d[:-n_val]
+            d_val[key] = d[-n_val:]
+
+        sample_wavelengths = f['flux'].attrs['sample_wavelengths'][:]
+
+    for d in (d_train, d_val):
+        # Reduce unWISE uncertainties. TODO: Remove this treatment.
+        #WISE_flux = d['flux'][:,-2:]
+        #WISE_flux_var = (d['flux_err'][:,-2:]**2)
+        #WISE_flux_var -= (0.01*WISE_flux)**2
+        #WISE_flux_err = np.sqrt(WISE_flux_var)
+        #d['flux_err'][:,-2:] = WISE_flux_err
+        #d['flux_sqrticov'][:,-2,-2] = 1/WISE_flux_err[:,0]
+        #d['flux_sqrticov'][:,-1,-1] = 1/WISE_flux_err[:,1]
+
+        # Remove sources with NaN fluxes or extinctions
+        idx_goodflux = np.all(np.isfinite(d['flux']), axis=1)
+        if not np.all(idx_goodflux):
+            n_bad = np.count_nonzero(~idx_goodflux)
+            print(f'{n_bad} sources with NaN fluxes.')
+
+        idx_goodext = np.isfinite(d['stellar_ext'])
+        if not np.all(idx_goodext):
+            n_bad = np.count_nonzero(~idx_goodext)
+            print(f'{n_bad} sources with NaN extinctions.')
+
+        idx = idx_goodext & idx_goodflux
+        if not np.all(idx):
+            n_bad = np.count_nonzero(~idx)
+            print(f'  -> Removing {n_bad} sources.')
+            for key in d:
+                d[key] = d[key][idx]
+
+        # Replace negative uncertainties with default value
+        # TODO: Re-evaluate this treatment
+        for p,(l,err) in enumerate([('teff',0.5),('logg',0.5),('feh',0.3)]):
+            idx = (d['stellar_type_err'][:,p] < 0.)
+            n_bad = np.count_nonzero(idx)
+            print(f'{n_bad} sources with negative uncertainties in {l}.')
+            d['stellar_type_err'][idx,p] = err
+
+        # Add in error floor to stellar types
+        for k,err_floor in enumerate(type_err_floor):
+            d['stellar_type_err'][:,k] = np.sqrt(
+                d['stellar_type_err'][:,k]**2 + err_floor**2
+            )
+
+        # Fix some metadata fields
+        idx = np.isfinite(d['norm_dg'])
+        d['norm_dg'][~idx] = np.nanmin(d['norm_dg'])
+
+        # Ignore WISE observations when very close neighbor detected
+        idx = (d['norm_dg'] > -10.)
+        n_bad = np.count_nonzero(idx)
+        pct_bad = 100 * n_bad / idx.size
+        print(f'{n_bad} sources ({pct_bad:.3f}%) with very close/bright '
+              'neighbors.')
+        print('  -> Ignore W1,2 bands.')
+        d['flux_err'][idx,-2:] = np.inf
+
+        # Ignore 2MASS observations when close neighbor detected
+        idx = (d['norm_dg'] > -5.)
+        n_bad = np.count_nonzero(idx)
+        pct_bad = 100 * n_bad / idx.size
+        print(f'{n_bad} sources ({pct_bad:.3f}%) with less close/bright '
+              'neighbors.')
+        print('  -> Ignore 2MASS bands.')
+        d['flux_err'][idx,-5:-2] = np.inf
+
+    return d_train, d_val, sample_wavelengths
     
 def save_as_h5(d, name):
     print(f'Saving as {name}')
@@ -1754,7 +1842,7 @@ def train(stage=0):
         d_train = load_h5('data/dtrain_final_wo_Rv_optimized.h5')
         
         idx_hq_large_E = np.where(   idx_hq & (d_train['stellar_ext_est']>0.3) )
-         print(f'Training on {100*np.where(idx_hq_large_E)[0].shape[0]}% of sources.')
+        print(f'Training on {100*np.where(idx_hq_large_E)[0].shape[0]}% of sources.')
         
         ret = train_stellar_model(
             stellar_model,
