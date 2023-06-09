@@ -1349,6 +1349,10 @@ def calc_stellar_fisher_hessian(stellar_model, data, gmm=None,
         tf.zeros([batch_size,st_type_dim], dtype=tf.float32),
         name='type_est_batch'
     )
+    xi_b = tf.Variable(
+        tf.zeros([batch_size], dtype=tf.float32),
+        name='xi_est_batch'
+    )
     ext_b = tf.Variable(
         tf.zeros([batch_size], dtype=tf.float32),
         name='ext_est_batch'
@@ -1378,6 +1382,7 @@ def calc_stellar_fisher_hessian(stellar_model, data, gmm=None,
 
         theta = tf.concat([
             type_b,
+            tf.expand_dims(xi_b, axis=1),
             tf.expand_dims(ext_b, axis=1),
             tf.expand_dims(plx_b, axis=1)
         ], axis=1)
@@ -1385,13 +1390,14 @@ def calc_stellar_fisher_hessian(stellar_model, data, gmm=None,
         with tf.GradientTape(watch_accessed_variables=False) as g:
             g.watch(theta)
 
-            t,ext,plx = tf.split(theta, [3,1,1], axis=1)
+            t,xi,ext,plx = tf.split(theta, [3,1,1,1], axis=1)
 
+            xi = tf.squeeze(xi, axis=1)
             ext = tf.squeeze(ext, axis=1)
             plx = tf.squeeze(plx, axis=1)
 
             # Calculate flux of each star
-            flux_pred = stellar_model.predict_obs_flux(t, ext, plx)
+            flux_pred = stellar_model.predict_obs_flux(t, xi, ext, plx)
 
         dflux_dtheta = g.batch_jacobian(flux_pred, theta)
 
@@ -1411,6 +1417,7 @@ def calc_stellar_fisher_hessian(stellar_model, data, gmm=None,
         print('Tracing hessian_batch ...')
         theta = tf.concat([
             type_b,
+            tf.expand_dims(xi_b, axis=1),
             tf.expand_dims(ext_b, axis=1),
             tf.expand_dims(plx_b, axis=1)
         ], axis=1)
@@ -1422,13 +1429,14 @@ def calc_stellar_fisher_hessian(stellar_model, data, gmm=None,
                                  persistent=True) as g1:
                 g1.watch(theta)
 
-                t,ext,plx = tf.split(theta, [3,1,1], axis=1)
+                t,xi,ext,plx = tf.split(theta, [3,1,1,1], axis=1)
+                xi = tf.squeeze(xi, axis=1)
                 ext = tf.squeeze(ext, axis=1)
                 plx = tf.squeeze(plx, axis=1)
 
                 # Calculate chi^2 of each star
                 chi2 = stellar_model.calc_chi2(
-                    t, ext, plx,
+                    t, xi, ext, plx,
                     flux_obs_b, flux_sqrticov_b
                 )
 
@@ -1462,6 +1470,7 @@ def calc_stellar_fisher_hessian(stellar_model, data, gmm=None,
         idx_zeroed = slice(0, i1-i0)
 
         assign_variable_padded(type_b, data['stellar_type_est'][idx])
+        assign_variable_padded(xi_b, data['xi_est'][idx])
         assign_variable_padded(ext_b, data['stellar_ext_est'][idx])
         assign_variable_padded(plx_b, data['plx_est'][idx])
         assign_variable_padded(flux_obs_b, data['flux'][idx])
@@ -1474,6 +1483,7 @@ def calc_stellar_fisher_hessian(stellar_model, data, gmm=None,
 
         prior_std = np.concatenate([
             st_type_err,
+            np.ones((data['xi_est'][idx].shape, 1))
             np.reshape(data['stellar_ext_err'][idx], (-1,1)),
             np.reshape(data['plx_err'][idx], (-1,1))
         ], axis=1)
@@ -1807,7 +1817,10 @@ def train(stage=0):
         teff_ini, feh_ini, logg_ini= d_train['stellar_type'].T
         for i in tqdm(range(int(len(teff_ini)/10000)+1)):
             ln_prior = stellar_type_prior.ln_prob(
-                np.vstack([teff_ini[i*10000: (i+1)*10000], feh_ini[i*10000: (i+1)*10000], logg_ini[i*10000: (i+1)*10000]]).T
+                np.vstack([
+                        teff_ini[i*10000: (i+1)*10000], 
+                        feh_ini[i*10000: (i+1)*10000], 
+                        logg_ini[i*10000: (i+1)*10000]]).T
             ).numpy()
             all_ln_prior.append(ln_prior)
         teff_ini, feh_ini, logg_ini = 0,0,0
