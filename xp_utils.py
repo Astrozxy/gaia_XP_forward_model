@@ -19,6 +19,7 @@ class XPSampler(object):
                      bp_n_parameters, rp_n_parameters,
                      bp_coefficient_errors, rp_coefficient_errors,
                      bp_coefficient_correlations, rp_coefficient_correlations,
+                     bp_standard_deviation, rp_standard_deviation,
                      truncation=None, diag_coefcov=False,
                      bp_zp_errfrac=None, rp_zp_errfrac=None,
                      zp_errfrac=None, diag_errfrac=None,
@@ -36,7 +37,18 @@ class XPSampler(object):
             rp_coefficient_errors
             bp_coefficient_correlations
             rp_coefficient_correlations
+            bp_standard_deviation
+            rp_standard_deviation
+
+        Optional Inputs:
             truncation
+            diag_coefcov
+            bp_zp_errfrac
+            rp_zp_errfrac
+            zp_errfrac
+            diag_errfrac
+            sample_coeffs
+            rng
 
         Outputs:
             flux
@@ -58,7 +70,7 @@ class XPSampler(object):
         cov_bp = gy.spectrum.utils._correlation_to_covariance_dr3int5(
             corr_bp,
             bp_coefficient_errors,
-            1.
+            bp_standard_deviation
         )
         corr_rp = gy.core.generic_functions.array_to_symmetric_matrix(
             rp_coefficient_correlations,
@@ -67,7 +79,7 @@ class XPSampler(object):
         cov_rp = gy.spectrum.utils._correlation_to_covariance_dr3int5(
             corr_rp,
             rp_coefficient_errors,
-            1.
+            rp_standard_deviation
         )
 
         # Truncate the design and covariance matrices at the
@@ -286,6 +298,8 @@ def main():
             xp_data['rp_coefficient_errors'][i],
             xp_data['bp_coefficient_correlations'][i],
             xp_data['rp_coefficient_correlations'][i],
+            xp_data['bp_standard_deviation'][i],
+            xp_data['rp_standard_deviation'][i],
             #bp_zp_errfrac=0.01,
             #rp_zp_errfrac=0.01,
             zp_errfrac=0.01,
@@ -350,6 +364,8 @@ def main():
             xp_data['rp_coefficient_errors'][i],
             xp_data['bp_coefficient_correlations'][i],
             xp_data['rp_coefficient_correlations'][i],
+            xp_data['bp_standard_deviation'][i],
+            xp_data['rp_standard_deviation'][i],
             #bp_zp_errfrac=0.01,
             #rp_zp_errfrac=0.01,
             zp_errfrac=0.01,
