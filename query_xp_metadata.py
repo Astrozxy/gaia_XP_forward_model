@@ -37,22 +37,10 @@ def query_metadata(source_id_0, source_id_1, out_fname):
             g.phot_bp_mean_mag, g.phot_bp_mean_flux, g.phot_rp_mean_flux_error,
             g.phot_rp_mean_mag, g.phot_rp_mean_flux, g.phot_bp_mean_flux_error,
 
-            g.teff_gspphot, g.teff_gspphot_lower, g.teff_gspphot_upper,
-            g.logg_gspphot, g.logg_gspphot_lower, g.logg_gspphot_upper,
-            g.mh_gspphot, g.mh_gspphot_lower, g.mh_gspphot_upper,
-            g.azero_gspphot, g.azero_gspphot_lower, g.azero_gspphot_upper,
-            g.ag_gspphot, g.ag_gspphot_lower, g.ag_gspphot_upper,
-            g.distance_gspphot, g.distance_gspphot_lower, g.distance_gspphot_upper,
-            p.radius_gspphot, p.radius_gspphot_lower, p.radius_gspphot_upper,
-
-            g.libname_gspphot, p.logposterior_gspphot, p.mcmcaccept_gspphot,
-
             g.has_xp_continuous, g.has_rvs, g.non_single_star, g.phot_variable_flag,
             g.phot_bp_n_obs, g.phot_rp_n_obs, g.phot_bp_rp_excess_factor, g.visibility_periods_used
 
         FROM gaiadr3.gaia_source as g
-            JOIN gaiadr3.astrophysical_parameters as p
-                ON g.source_id = p.source_id
             LEFT OUTER JOIN external.gaiaedr3_spurious as spur
                 ON g.source_id = spur.source_id
 
@@ -74,7 +62,7 @@ def query_metadata(source_id_0, source_id_1, out_fname):
 
 def main():
     # Output directory for metadata on spectra
-    out_dir = 'data/xp_continuous_metadata'
+    out_dir = 'data/xp_metadata'
 
     # Directory containing BP/RP spectra
     spec_dir = 'data/xp_continuous_mean_spectrum'
@@ -98,7 +86,7 @@ def main():
         fid = fn.split('_')[-1].split('.')[0]
         out_fname = os.path.join(
             out_dir,
-            f'xp_continuous_metadata_{fid}.fits.gz'
+            f'xp_metadata_{fid}.fits.gz'
         )
         if os.path.exists(out_fname):
             continue
