@@ -195,6 +195,20 @@ class FluxModel(snt.Module):
         #print('chi2.shape:', chi2.shape)
         return chi2
 
+    def calc_residuals(self, stellar_type, xi,
+                       stellar_extinction, stellar_parallax,
+                       flux_obs, flux_err=None):
+        # Calculate predicted flux
+        flux_pred = self.predict_obs_flux(
+            stellar_type, xi, stellar_extinction, stellar_parallax
+        )
+        # Residuals
+        dflux = flux_pred - flux_obs
+        # Normalize by uncertainties?
+        if flux_err is not None:
+            dflux = dflux / flux_err
+        return dflux
+
     def penalty(self):
         l2_sum = 0.
         # Penalty on stellar model nn weights
@@ -255,21 +269,6 @@ class FluxModel(snt.Module):
 
         return flux_model
 
-def chi_band(stellar_model, 
-                            type_est_batch, xi_est_batch, 
-                            ext_est_batch, plx_est_batch,
-                            flux_batch, flux_err_batch,
-            ):
-            '''
-            record the chi of given band
-            '''
-            flux_pred = stellar_model.predict_obs_flux(
-                type_est_batch, xi_est_batch, ext_est_batch, plx_est_batch
-            )
-            # chi^2
-            dflux = flux_pred - flux_batch
-            chi_flux = (dflux/flux_err_batch)**2
-            return chi_flux[:, 64:].numpy()
 
 def grads_stellar_model(stellar_model,
                         stellar_type, xi,
@@ -583,8 +582,8 @@ def train_stellar_model(stellar_model,
 
     model_loss_hist = []
     stellar_loss_hist = []
-    chi_w1_hist = []
-    chi_w2_hist = []
+    chi2_w1_hist = []
+    chi2_w2_hist = []
     slope_record = []
     bias_record = []
 
@@ -631,14 +630,13 @@ def train_stellar_model(stellar_model,
             model_loss_hist.append(mod_loss)
             pbar_disp['mod_loss'] = mod_loss
 
-            chi_w1, chi_w2 = chi_band(stellar_model, 
-                            #tf.constant(np.array([64, 65], dtype='int')), 
-                            type_est_batch, xi_est_batch, 
-                            ext_est_batch, plx_est_batch,
-                            flux_batch, flux_err_batch,
-            ).T
-            chi_w1_hist.append(np.mean(chi_w1))
-            chi_w2_hist.append(np.mean(chi_w2))
+            chi2_w1, chi2_w2 = stellar_model.calc_residuals(
+                type_est_batch, xi_est_batch, 
+                ext_est_batch, plx_est_batch,
+                flux_batch, flux_err=flux_err_batch
+            ).numpy()[:,64:].T**2
+            chi2_w1_hist.append(np.mean(chi2_w1))
+            chi2_w2_hist.append(np.mean(chi2_w2))
             slope_record.append(stellar_model._ext_slope.numpy()[0])
             bias_record.append(stellar_model._ext_bias.numpy()[0])
             #pbar_disp['mod_lr'] = opt_model._decayed_lr(tf.float32).numpy()
@@ -672,8 +670,8 @@ def train_stellar_model(stellar_model,
 
     if optimize_stellar_model:
         ret['model_loss'] = model_loss_hist
-        ret['chi_w1'] = chi_w1_hist
-        ret['chi_w2'] = chi_w2_hist
+        ret['chi2_w1'] = chi2_w1_hist
+        ret['chi2_w2'] = chi2_w2_hist
         ret['ext_slope'] = np.vstack(slope_record)
         ret['ext_bias'] = np.vstack(bias_record)
 
@@ -683,8 +681,8 @@ def train_stellar_model(stellar_model,
         d_train['xi_est'] = xi_est
         d_train['stellar_ext_est'] = np.exp(ln_ext_est)
         d_train['plx_est'] = np.exp(ln_plx_est)
-        ret['chi_w1'] = chi_w1_hist
-        ret['chi_w2'] = chi_w2_hist
+        ret['chi2_w1'] = chi2_w1_hist
+        ret['chi2_w2'] = chi2_w2_hist
 
     return ret
 
