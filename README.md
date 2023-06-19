@@ -1,7 +1,7 @@
 Gaia XP Forward Model
 =====================
 
-This is the tidied-up version of the Gaia XP forward model.
+A data-driven forward model of Gaia XP stellar spectra, which maps from atmospheric parameters, distance and extinction to predicted XP spectra. The model is learned from a subset of XP stars with observed higher-resolution spectra (e.g., from LAMOST). After the model has been learned, it can be applied to *all* XP spectra to obtain inferred stellar parameters.
 
 Workflow
 ========
