@@ -122,7 +122,9 @@ class FluxModel(snt.Module):
         self.predict_ln_ext_curve(tf.zeros([1, 1]))
         
         # Load the initial guess of the extinction curve
-        dc_drv = np.load('initial_guess.npy').astype('float32')
+        dc_drv = np.arange(66)/66. - 14./66.
+        dc_drv = dc_drv.astype('float32')
+        #dc_drv = np.load('initial_guess.npy').astype('float32')
         self._ext_slope.assign(dc_drv.reshape(1,-1))
         
         # Count the total number of weights
@@ -1677,6 +1679,7 @@ def train(stage=0):
         # Initialize the parameter estimates at their measured (input) values
         for key in ('stellar_type', 'xi','stellar_ext', 'plx'):
             d_train[f'{key}_est'] = d_train[key].copy()
+            d_val[f'{key}_est'] = d_train[key].copy()
         
         print('Creating flux model ...')
         n_stellar_params = d_train['stellar_type'].shape[1]
@@ -1802,12 +1805,12 @@ def train(stage=0):
         save_as_h5(ret, 'hist_loss/final_wo_Rv.h5')         
 
     if stage<2:
-               
+         
         d_val = load_h5('d_val.h5')
         d_train = load_h5('data/dtrain_final_wo_Rv.h5')      
         
         stellar_model = FluxModel.load('models/flux/xp_spectrum_model_final-1') 
-
+        
         print('Loading Gaussian Mixture Model prior on stellar type ...')
         stellar_type_prior = GaussianMixtureModel.load('models/prior/gmm_prior-1')
         
@@ -1853,7 +1856,7 @@ def train(stage=0):
         save_as_h5(d_train, 'data/dtrain_final_wo_Rv_optimized.h5')
         d_train = load_h5('data/dtrain_final_wo_Rv_optimized.h5')
         
-        idx_hq_large_E = idx_hq & (d_train['stellar_ext_est']>0.3)
+        idx_hq_large_E = idx_hq & (d_train['stellar_ext_est']>0.1)
         print(f'Training on {100*np.where(idx_hq_large_E)[0].shape[0]/len(idx_hq_large_E)}% of sources.')
         
         ret = train_stellar_model(
@@ -1886,7 +1889,7 @@ def train(stage=0):
             optimize_stellar_model=True,
             optimize_stellar_params=True,
             #lr_model_init=1e-7,
-            lr_stars_init=1e-5,
+            #lr_stars_init=1e-5,
             batch_size=batch_size,
             n_epochs=n_epochs,
             var_update = [ 'E', 'plx', 'xi'],
@@ -1899,13 +1902,15 @@ def train(stage=0):
             weights_per_star,
             idx_train=np.where(idx_hq_large_E)[0],
             optimize_stellar_model=True,
-            optimize_stellar_params=False,
+            optimize_stellar_params=True,
             lr_model_init=1e-7,
-            #lr_stars_init=1e-5,
+            lr_stars_init=1e-5,
             batch_size=batch_size,
             n_epochs=n_epochs,
+            var_update = [ 'E', 'plx', 'xi'],
             model_update = ['ext_curve_w', 'ext_curve_b'],
         ) 
+        
         
         np.save('index/idx_with_Rv_good.npy' ,idx_hq_large_E)
         # Save initial guess of xi
@@ -1938,8 +1943,8 @@ def train(stage=0):
             idx_train=np.where(idx_hq_large_E)[0],
             optimize_stellar_model=True,
             optimize_stellar_params=True,
-            lr_model_init=1e-7,
-            lr_stars_init=1e-5,
+            lr_model_init=1e-4,
+            lr_stars_init=1e-4,
             batch_size=batch_size,
             n_epochs=n_epochs,
             var_update = ['atm','E','plx','xi'],
@@ -1953,7 +1958,7 @@ def train(stage=0):
     if stage<4:
         
         stellar_model = FluxModel.load('models/flux/xp_spectrum_model_intermediate_Rv-1')
-        '''
+        
         d_train = load_h5('data/dtrain_Rv_intermediate_0.h5')
         d_val = load_h5('d_val.h5')
         idx_hq_large_E = np.load('index/idx_with_Rv_good.npy')
@@ -1978,7 +1983,7 @@ def train(stage=0):
        
         save_as_h5(d_train, 'data/dtrain_Rv_intermediate_1.h5')
         save_as_h5(ret, 'hist_loss/Rv_intermediate_1.h5')    
-         '''
+        
         
         d_train = load_h5('data/dtrain_Rv_intermediate_1.h5')
         d_val = load_h5('d_val.h5')  
@@ -2000,10 +2005,10 @@ def train(stage=0):
         pct_good = np.count_nonzero(idx_good) / idx_good.size * 100
         print(f'Combined outliers: {100-pct_good:.3f}% of sources.')        
                 
-        idx_final_train  =  (d_train['stellar_ext_est']>0.3)& idx_good
+        idx_final_train  =  (d_train['stellar_ext_est']>0.1)& idx_good
         print(f'Training on {100*np.where(idx_final_train)[0].shape[0]/len(idx_final_train)}% of sources.')
         
-        n_epochs = 256
+        n_epochs = 512
         weights_per_star = down_sample_weighing( 
             d_train['xi_est'][idx_final_train],
             d_train['xi_est'], 
@@ -2025,7 +2030,7 @@ def train(stage=0):
             var_update = ['atm','E','plx','xi'],
             model_update = ['stellar_model', 'ext_curve_w', 'ext_curve_b'],
         )               
-
+        
         stellar_model.save('models/flux/xp_spectrum_model_final_Rv')
         save_as_h5(ret, 'hist_loss/final_Rv.h5')    
 
@@ -2039,8 +2044,11 @@ def train(stage=0):
             batch_size=batch_size,
             n_epochs=n_epochs,
             var_update = ['atm','E','plx','xi'],
-        )               
-
+        )         
+        
+        for key in ('stellar_type', 'xi', 'stellar_ext', 'plx'):
+            d_val[f'{key}_est'] = d_train[key].copy()
+        
         ret = train_stellar_model(
             stellar_model,
             d_val, d_val,
@@ -2060,4 +2068,4 @@ def train(stage=0):
         
         
 if __name__=='__main__':
-    train(stage=1)
+    train(stage=3)
