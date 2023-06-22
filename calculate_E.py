@@ -76,12 +76,12 @@ def calculate_E(fn):
     #E_mean_planck = np.mean(E_individual_planck, axis=0)
 
     # Saving the output
-    with h5py.File('data/xp_bayestar_match/'+f'xp_reddening_match_{idx}.h5', 'w') as f:
+    with h5py.File('data/xp_dustmap_match/'+f'xp_reddening_match_{idx}.h5', 'w') as f:
         f['E_mean_bayestar'] = E_mean_bayestar
         f['E_sigma_bayestar'] = E_sigma_bayestar
         f['E_mean_sfd'] = E_mean_sfd
         #f['E_mean_planck'] = E_mean_planck
-        f['gdr3_source_id'] = np.array(d['gdr3_source_id'])
+        f['gdr3_source_id'] = np.array(d['source_id'])
 
 from p_tqdm import p_map
 
