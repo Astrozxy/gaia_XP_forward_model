@@ -1,4 +1,6 @@
 from model import *
+from xp_utils import *
+
 
 def gather_data_into_file(fname_out,
                           sample_wavelengths,
@@ -11,7 +13,7 @@ def gather_data_into_file(fname_out,
     lamost_dir = os.path.join(data_dir, 'xp_lamost_dr8_match')
     unwise_dir = os.path.join(data_dir, 'xp_unwise_match')
     tmass_dir = os.path.join(data_dir, 'xp_tmass_match')
-    reddening_dir = os.path.join(data_dir, 'xp_bayestar_match')
+    reddening_dir = os.path.join(data_dir, 'xp_dustmap_match')
     meta_dir = os.path.join(data_dir, 'xp_continuous_metadata')
     xp_dir = os.path.join(data_dir, 'xp_continuous_mean_spectrum')
 
@@ -179,10 +181,13 @@ def gather_data_into_file(fname_out,
             # Gaia information
             meta_fn = os.path.join(
                 meta_dir,
-                f'xp_continuous_metadata_{fid}.h5'
+                f'xp_metadata_{fid}.h5'
             )
-            with fits.open(meta_fn, mode='readonly') as f:
-                m = f[1].data[:]
+            m = {}
+            f = Table.read(meta_fn)
+            for key in f.keys():
+                m[key] = np.array(f[key])
+            f = []
             # Check that GDR3 source IDs match
             assert np.all(m['source_id'][gaia_idx] == d['gdr3_source_id'])
 
@@ -205,7 +210,7 @@ def gather_data_into_file(fname_out,
                 d[key] = m[key][gaia_idx]
 
             # Filter out bad data
-            idx_good = np.ones(n, dtype=np.bool)
+            idx_good = np.ones(n, dtype="bool")
             # LAMOST S/N
             for b in 'gri':
                 idx_good &= (lamost_cat[f'snr{b}'][lamost_idx] > 20.)
@@ -240,11 +245,11 @@ def gather_data_into_file(fname_out,
                 bprp_data = [f[key][:][gaia_idx] for key in bprp_fields]
 
             # Load stellar extinctions
-            ext_fname = os.path.join(reddening_dir, fid+'.h5')
+            ext_fname = os.path.join(reddening_dir, 'xp_reddening_match_'+fid+'.h5')
             with h5py.File(ext_fname, 'r') as f:
-                d['stellar_ext'] = f['E_mean'][:].astype('f4')[gaia_idx]
-                d['stellar_ext_err'] = f['E_sigma'][:].astype('f4')[gaia_idx]
-                ext_gdr3_source_id = f['source_id'][:][gaia_idx]
+                d['stellar_ext'] = f['E_mean_bayestar'][:].astype('f4')[gaia_idx]
+                d['stellar_ext_err'] = f['E_sigma_bayestar'][:].astype('f4')[gaia_idx]
+                ext_gdr3_source_id = f['gdr3_source_id'][:][gaia_idx]
             d['stellar_ext_err'] = np.sqrt(
                 d['stellar_ext_err']**2
               + (stellar_ext_err_floor_pct*d['stellar_ext'])**2
