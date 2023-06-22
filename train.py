@@ -19,6 +19,7 @@ def gather_data_into_file(fname_out,
 
     lamost_fname_pattern = 'match_xp_continuous_lamost_*-*.h5'
     lamost_fnames = glob(os.path.join(lamost_dir, lamost_fname_pattern))
+    
     # Deterministically shuffle the data filenames, by first ordering
     # and then shuffling with a fixed seed. This ensures that the data
     # is always ordered in the exact same way, and that the
@@ -527,7 +528,7 @@ def train(stage=0):
     
     if stage==0:
         # Stage 0, begin without initial stellar model
-        data_fname = 'xp_nn_training_data.h5'
+        data_fname = 'data/training/xp_nn_training_data.h5'
         print(f'Loading training data from {data_fname} ...')
         d_train, d_val, sample_wavelengths = load_data(data_fname)
         print(f'Loaded {len(d_train["plx"])} sources.')
@@ -536,6 +537,9 @@ def train(stage=0):
         d_train['xi'] = np.zeros(len(d_train["plx"]), dtype='float32')
         d_val['xi'] = np.zeros(len(d_val["plx"]), dtype='float32')
 
+        save_as_h5('d_val', d_val)
+        save_as_h5('data/d_train', d_train)
+        
         # Initial weight: equal for all stars
         weights_per_star = np.ones(len(d_train["plx"]), dtype='float32')
         
@@ -661,6 +665,20 @@ def train(stage=0):
             var_update = ['atm','E','plx'],
         )
         loss_hist.append(ret)
+        
+        # Calculate hq standard again, with a higher limit on chi2
+        idx_flux_good = identify_flux_outliers(
+            d_train, stellar_model,
+            chi2_dof_clip=10.,
+            #chi_indiv_clip=20.
+        )
+        
+        pct_good = np.count_nonzero(idx_flux_good) / idx_flux_good.size * 100
+        print(f'Flux outliers: {100-pct_good:.3f}% of sources.')
+
+        idx_good = idx_params_good & idx_flux_good
+        pct_good = np.count_nonzero(idx_good) / idx_good.size * 100
+        print(f'Combined outliers: {100-pct_good:.3f}% of sources.')
         
         np.save('index/idx_good_wo_Rv.npy', idx_good)
         stellar_model.save('models/flux/xp_spectrum_model_final')
@@ -847,7 +865,6 @@ def train(stage=0):
         save_as_h5(d_train, 'data/dtrain_Rv_intermediate_1.h5')
         save_as_h5(ret, 'hist_loss/Rv_intermediate_1.h5')    
         
-        
         d_train = load_h5('data/dtrain_Rv_intermediate_1.h5')
         d_val = load_h5('d_val.h5')  
         
@@ -932,3 +949,4 @@ def train(stage=0):
         
 if __name__=='__main__':
     prepare_training_data()
+    train(stage=0)    
