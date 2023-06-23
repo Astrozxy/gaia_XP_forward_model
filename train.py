@@ -537,8 +537,8 @@ def train(stage=0):
         d_train['xi'] = np.zeros(len(d_train["plx"]), dtype='float32')
         d_val['xi'] = np.zeros(len(d_val["plx"]), dtype='float32')
 
-        save_as_h5('d_val', d_val)
-        save_as_h5('data/d_train', d_train)
+        save_as_h5(d_val, 'd_val',)
+        save_as_h5(d_train, 'data/d_train',)
         
         # Initial weight: equal for all stars
         weights_per_star = np.ones(len(d_train["plx"]), dtype='float32')
@@ -948,5 +948,5 @@ def train(stage=0):
         
         
 if __name__=='__main__':
-    prepare_training_data()
+    #prepare_training_data()
     train(stage=0)    
