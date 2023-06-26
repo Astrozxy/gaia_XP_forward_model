@@ -67,7 +67,7 @@ def main():
     # Metadata for Gaia BP/RP spectra
     xp_meta_fnames = glob(os.path.join(
         'data/xp_continuous_metadata',
-        'xp_metadata_*-*.fits.gz'
+        'xp_metadata_*-*.h5'
     ))
     xp_meta_fnames.sort()
     n = len(xp_meta_fnames)
@@ -212,25 +212,28 @@ def main():
         # Gaia metadata
         fn_meta = xp_meta_fnames[i]
         assert fn_meta.split('_')[-1].split('.')[0] == fid
-        with fits.open(fn_meta, mode='readonly') as f:
-            # Load Gaia photometry (not used in model)
-            for band in ('g', 'bp', 'rp'):
-                for suffix in ('', '_error'):
-                    key = f'phot_{band}_mean_flux{suffix}'
-                    d[key] = f[1].data[key][:].astype('f4')
+        f = Table.read(fn_meta)
+        # Load Gaia photometry (not used in model)
+        for band in ('g', 'bp', 'rp'):
+            for suffix in ('', '_error'):
+                key = f'phot_{band}_mean_flux{suffix}'
+                d[key] = np.array(f[key]).astype('f4')
 
-            # Load parallax
-            d['plx'] = f[1].data[plx_field][:].astype('f4')
-            d['plx_err'] = f[1].data[plx_err_field][:].astype('f4')
+        # Load parallax
+        d['plx'] = np.array(f[plx_field]).astype('f4')
+        d['plx_err'] = np.array(f[plx_err_field]).astype('f4')
 
-            # Load sky coordinates
-            d['ra'] = f[1].data['ra'][:].astype('f4')
-            d['dec'] = f[1].data['dec'][:].astype('f4')
+        # Load sky coordinates
+        d['ra'] = np.array(f['ra']).astype('f4')
+        d['dec'] =np.array(f['dec']).astype('f4')
 
-            # Load norm_dg (a measure of nearby bad neighbors)
-            norm_dg = f[1].data['norm_dg'][:]
-            idx = np.isfinite(norm_dg)
-            norm_dg[~idx] = -45.
+        # Load norm_dg (a measure of nearby bad neighbors)
+        norm_dg = np.array(f['norm_dg'])
+        idx = np.isfinite(norm_dg)
+        norm_dg[~idx] = -45.
+        
+        # Release the storage taken by f
+        f = []
 
         # Sample BP/RP fluxes and calculate their inverse covariances
         n_wl = sample_wavelengths.size
