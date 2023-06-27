@@ -6,6 +6,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from astropy.table import Table
+from astropy.coordinates import SkyCoord
 import h5py
 
 import os.path
@@ -49,17 +50,17 @@ def append_to_h5_file(h5_file, data, chunk_size=512):
 
 def extract_fluxes(fid, match_source_ids=None, thin=1):
     # Fields needed to sample XP spectra
-    bprp_fields = [
-        'bp_coefficients',
-        'rp_coefficients',
-        'bp_n_parameters',
-        'rp_n_parameters',
-        'bp_coefficient_errors',
-        'rp_coefficient_errors',
-        'bp_coefficient_correlations',
-        'rp_coefficient_correlations',
-        'bp_standard_deviation',
-        'rp_standard_deviation'
+    bprp_fields = [ # key, bad definition, bad filler
+        ('bp_coefficients', lambda x: np.isnan(x), 1.),
+        ('rp_coefficients', lambda x: np.isnan(x), 1.),
+        ('bp_n_parameters', lambda x: x != 55, 55),
+        ('rp_n_parameters', lambda x: x != 55, 55),
+        ('bp_coefficient_errors', lambda x: np.isnan(x), 1e4),
+        ('rp_coefficient_errors', lambda x: np.isnan(x), 1e4),
+        ('bp_coefficient_correlations', lambda x: np.isnan(x), 0.),
+        ('rp_coefficient_correlations', lambda x: np.isnan(x), 0.),
+        ('bp_standard_deviation', lambda x: np.isnan(x), 1.),
+        ('rp_standard_deviation', lambda x: np.isnan(x), 1.)
     ]
     
     # Wavelength sampling (in nm)
@@ -92,9 +93,7 @@ def extract_fluxes(fid, match_source_ids=None, thin=1):
     d_meta = Table.read(meta_fn)[::thin]
 
     # Match XP and stellar parameters
-    if match_source_ids is None:
-        idx_xp = slice(None)
-    else:
+    if match_source_ids is not None:
         idx_xp, idx_matches = get_match_indices(
             d_meta['source_id'],
             match_source_ids
@@ -127,7 +126,6 @@ def extract_fluxes(fid, match_source_ids=None, thin=1):
         )
 
         # Apply cut
-        idx_xp = idx_xp[idx_good]
         idx_matches = idx_matches[idx_good]
         d_meta = d_meta[idx_good]
 
@@ -141,8 +139,71 @@ def extract_fluxes(fid, match_source_ids=None, thin=1):
         'data/xp_continuous_mean_spectrum/'
        f'XpContinuousMeanSpectrum_{fid}.h5'
     )
+    d_xp = {}
     with h5py.File(xp_fn, 'r') as f:
-        d_xp = {k:f[k][:][::thin][idx_xp] for k in f.keys()}
+        for key,f_bad,fill_bad in bprp_fields:
+            x = f[key][:]
+            # Fix any problems in XP spectral data
+            idx_bad = f_bad(x)
+            if np.any(idx_bad):
+                logging.warning(f'{fid}: Fixing bad {key} values.')
+                x[idx_bad] = fill_bad
+            d_xp[key] = x
+
+    # Load stellar extinctions
+    E_fname = f'data/xp_dustmap_match/xp_reddening_match_{fid}.h5'
+    with h5py.File(E_fname, 'r') as f:
+        d_E = {k:f[k][:] for k in f.keys()}
+    idx,idx_insert_E = get_match_indices(d_E['gdr3_source_id'], gdr3_source_id)
+    d_E = {k:d_E[k][idx] for k in d_E}
+    coords_E = SkyCoord(
+        d_meta['ra'][idx_insert_E],
+        d_meta['dec'][idx_insert_E],
+        unit='deg', frame='icrs'
+    )
+    n_noE = n - len(idx_insert_E)
+    pct_noE = 100 * n_noE / n
+    logging.info(f'{fid}: {n_noE} have no reddening ({pct_noE:.3g}%).')
+    stellar_ext = np.full(n, np.nan)
+    stellar_ext_err = np.full(n, np.nan)
+    stellar_ext_source = np.full(n, '', dtype='S12')
+    # Order or priority: Bayestar, SFD (only above plane), nothing
+    idx = np.isfinite(d_E['E_mean_bayestar'])
+    stellar_ext[idx_insert_E[idx]] = d_E['E_mean_bayestar'][idx]
+    stellar_ext_err[idx_insert_E[idx]] = d_E['E_sigma_bayestar'][idx]
+    stellar_ext_source[idx_insert_E[idx]] = 'bayestar'
+    # Only use SFD when:
+    #   1. Bayestar not available
+    #   2. >400 pc above Galactic midplane
+    z_min = 0.4 # kpc
+    z_gal = coords_E.transform_to('galactic').represent_as('cartesian').z.value
+    plx_upper = (
+        d_meta['parallax'][idx_insert_E]
+      + 2*d_meta['parallax_error'][idx_insert_E]
+    )
+    plx_upper = np.clip(plx_upper, 0., np.inf)
+    z_gal_lower = z_gal / plx_upper # kpc
+    idx_aboveplane = (np.abs(z_gal_lower) > z_min)
+    idx = idx_aboveplane & ~np.isfinite(d_E['E_mean_bayestar'])
+    stellar_ext[idx_insert_E[idx]] = d_E['E_mean_sfd'][idx]
+    stellar_ext_err[idx_insert_E[idx]] = 0.
+    stellar_ext_source[idx_insert_E[idx]] = 'sfd'
+    # Inflate all reddening uncertainties
+    stellar_ext_err_floor_abs = 0.03
+    stellar_ext_err_floor_pct = 0.10
+    stellar_ext_err = np.sqrt(
+        stellar_ext_err**2
+      + (stellar_ext_err_floor_pct*stellar_ext)**2
+      + stellar_ext_err_floor_abs**2
+    )
+    # Log statistics
+    source_name,n_source = np.unique(stellar_ext_source, return_counts=True)
+    for s,n_s in zip(source_name, n_source):
+        pct = 100 * n_s / n
+        s = s.decode()
+        if not len(s):
+            s = '-'
+        logging.info(f'{fid}: reddening: {n_s} sources use {s} ({pct:.3g}%)')
 
     # Sample XP spectra
     flux = np.zeros((n,n_wl+n_b), dtype='f4')
@@ -153,7 +214,7 @@ def extract_fluxes(fid, match_source_ids=None, thin=1):
     for j in range(n):
         # Get sampled spectrum and covariance matrix
         fl,fl_err,fl_cov,_,_ = xp_sampler.sample(
-            *[d_xp[k][j] for k in bprp_fields],
+            *[d_xp[k][j] for k,_,_ in bprp_fields],
             bp_zp_errfrac=0.001, # BP zero-point uncertainty
             rp_zp_errfrac=0.001, # RP zero-point uncertainty
             zp_errfrac=0.005, # Joint BP/RP zero-point uncertainty
@@ -171,8 +232,6 @@ def extract_fluxes(fid, match_source_ids=None, thin=1):
     pct_neg = 100 * np.mean(idx_neg)
     logging.info(f'{fid}: {n_neg} have negative eivals ({pct_neg:.3g}%).')
 
-    # Load stellar extinctions
-
     # Fix norm_dg (if NaN, then no close neighbor)
     idx = np.isfinite(d_meta['norm_dg'])
     d_meta['norm_dg'][~idx] = -50. # TODO: Is this correct?
@@ -180,13 +239,13 @@ def extract_fluxes(fid, match_source_ids=None, thin=1):
     # Load unWISE photometry
     unwise_fn = os.path.join(
         'data', 'xp_unwise_match',
-        f'match_xp_continuous_unwise_{fid}.h5'
+        f'xp_unwise_match_{fid}.h5'
     )
     with h5py.File(unwise_fn, 'r') as f:
         sid = f['gdr3_source_id'][:]
         d_unwise = f['unwise_data'][:]
         sep_unwise = f['sep_arcsec'][:]
-    idx_insert_unwise,idx = get_match_indices(gdr3_source_id, sid)
+    idx,idx_insert_unwise = get_match_indices(sid, gdr3_source_id)
     d_unwise = d_unwise[idx]
     sep_unwise = sep_unwise[idx]
     n_unwise = len(d_unwise)
@@ -245,9 +304,9 @@ def extract_fluxes(fid, match_source_ids=None, thin=1):
         f'xp_tmass_match_{fid}.fits.gz'
     )
     d_tmass = Table.read(tmass_fname)
-    idx_insert_tmass,idx = get_match_indices(
-        gdr3_source_id,
-        d_tmass['source_id']
+    idx,idx_insert_tmass = get_match_indices(
+        d_tmass['source_id'],
+        gdr3_source_id
     )
     d_tmass = d_tmass[idx]
     n_tmass = len(d_tmass)
@@ -309,6 +368,9 @@ def extract_fluxes(fid, match_source_ids=None, thin=1):
         'flux_sqrticov': flux_sqrticov,
         'flux_cov_eival_min': flux_cov_eival_min,
         'flux_cov_eival_max': flux_cov_eival_max,
+        'stellar_ext': stellar_ext,
+        'stellar_ext_err': stellar_ext_err,
+        'stellar_ext_source': stellar_ext_source
     }
 
     # Gaia photometry (not used in model)
@@ -375,11 +437,6 @@ def main():
         level=logging.INFO,
         format='%(asctime)s : %(levelname)s : %(message)s'
     )
-
-    #unwise_dir = 'data/xp_unwise_match'
-    #tmass_dir = 'data/xp_tmass_match'
-    #reddening_dir = 'data/xp_bayestar_match'
-    #meta_dir = 'data/xp_metadata'
 
     # Load the stellar parameters linked to Gaia source_ids
     d_params = Table.read(args.stellar_params)
