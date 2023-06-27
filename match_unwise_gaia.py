@@ -70,7 +70,7 @@ def main():
 
     # Loop over Gaia BP/RP spectra metadata files, and match each to unWISE
     out_dir = 'data/xp_unwise_match/'
-    fnames = glob(os.path.join('data/xp_metadata/xp_metadata_*-*.h5'))
+    fnames = glob('data/xp_metadata/xp_metadata_*-*.h5')
     fnames.sort()
 
     for fn in tqdm(fnames):
@@ -117,6 +117,13 @@ def main():
         )
 
         unwise_matches = unwise[idx_unwise]
+
+        # Sort by Gaia DR3 source ID
+        idx_sort = np.argsort(source_id)
+        source_id = source_id[idx_sort]
+        idx_gaia = idx_gaia[idx_sort]
+        sep2d = sep2d[idx_sort]
+        unwise_matches = unwise_matches[idx_sort]
 
         # Save matches
         kw = dict(compression='lzf', chunks=True)
