@@ -15,8 +15,8 @@ from dustmaps.bayestar import BayestarQuery
 bayestar = BayestarQuery(max_samples=100)
 from dustmaps.sfd import SFDQuery
 sfd = SFDQuery()
-#from dustmaps.planck import PlanckQuery
-#planck = PlanckQuery(component='tau')
+from dustmaps.planck import PlanckQuery
+planck = PlanckQuery(component='tau')
 
 import os
 fnames = glob('data/xp_continuous_metadata/*.h5')
@@ -66,21 +66,21 @@ def calculate_E(fn):
     E_mean_bayestar = np.einsum('jik,ij->i',E_individual_bayestar, prior_normalized)/5.
     res = (E_individual_bayestar-E_mean_bayestar.reshape(1,-1,1))
     E_sigma_bayestar = (np.einsum('jik,ij->i',res**2,prior_normalized)/5.)**0.5
-
+    
     # SFD : 2D
     E_individual_sfd = np.array([sfd(coords) for coords in all_position])
     E_mean_sfd = np.mean(E_individual_sfd, axis=0)
         
     # Planck: 2D
-    #E_individual_planck = np.array([planck(coords) for coords in all_position])
-    #E_mean_planck = np.mean(E_individual_planck, axis=0)
+    E_individual_planck = np.array([planck(coords) for coords in all_position])
+    E_mean_planck = np.mean(E_individual_planck, axis=0)
 
     # Saving the output
     with h5py.File('data/xp_dustmap_match/'+f'xp_reddening_match_{idx}.h5', 'w') as f:
         f['E_mean_bayestar'] = E_mean_bayestar
         f['E_sigma_bayestar'] = E_sigma_bayestar
         f['E_mean_sfd'] = E_mean_sfd
-        #f['E_mean_planck'] = E_mean_planck
+        f['E_mean_planck'] = E_mean_planck
         f['gdr3_source_id'] = np.array(d['source_id'])
 
 from p_tqdm import p_map
