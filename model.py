@@ -1098,11 +1098,13 @@ def optimize_stellar_params(flux_model, data,
         n_type = 3
     n_wl = data['flux'].shape[1]
 
+    data['xi_est'] = np.zeros(data['plx_est'].shape, dtype='float32')
+    
     # Initial values of ln(extinction) and ln(parallax)
     ln_stellar_ext_all = np.log(np.clip(data['stellar_ext_est'], 1e-9, np.inf))
     ln_stellar_plx_all = np.log(np.clip(data['plx_est'], 1e-9, np.inf))
     xi_all = data['xi_est'].copy()
-    
+
     # Empty Tensors to hold batches of stellar parameters
     st_type_b = tf.Variable(tf.zeros((batch_size,n_type)))
     ln_ext_b = tf.Variable(tf.zeros((batch_size,)))
