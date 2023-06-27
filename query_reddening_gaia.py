@@ -28,9 +28,14 @@ upper = 5
 mu = 0.
 sigma = 1.
 N = 1000
+gaussian_generator = scipy.stats.truncnorm.rvs(
+    (lower-mu)/sigma,
+    (upper-mu)/sigma,
+    loc=mu,
+    scale=sigma,
+    size=N
+)
 
-gaussian_generator  = scipy.stats.truncnorm.rvs(
-          (lower-mu)/sigma,(upper-mu)/sigma,loc=mu,scale=sigma,size=N)
 
 def calculate_E(fn):
     idx = fn[-16:-3]    
@@ -46,14 +51,20 @@ def calculate_E(fn):
     dec = np.array(d['dec'])
 
     # Generate samples to represent uncertainty of distance
-    all_distance = [ 1./np.clip(parallax+parallax_err*gen, 
-                                    a_min=0.0001, a_max=np.inf)
-                                    for gen in gaussian_generator ]
+    all_distance = [
+        1./np.clip(parallax+parallax_err*gen, a_min=0.0001, a_max=np.inf)
+        for gen in gaussian_generator
+    ]
     all_distance = np.vstack(all_distance).T   
-    all_position = [ SkyCoord(ra*units.deg,dec*units.deg,
-                                  distance=all_distance[:, j]*units.kpc,
-                                  frame='icrs') 
-                                for j, gen in enumerate(gaussian_generator)]
+    all_position = [
+        SkyCoord(
+            ra*units.deg,
+            dec*units.deg,
+            distance=all_distance[:, j]*units.kpc,
+            frame='icrs'
+        ) 
+        for j, gen in enumerate(gaussian_generator)
+    ]
     
     #L_scale = 1.35 # Scale length, kpc
     #prior = all_distance**2*np.exp(-all_distance/L_scale)
@@ -62,12 +73,21 @@ def calculate_E(fn):
     prior_normalized = prior/np.sum(prior,axis=1).reshape(-1,1)
 
     # Query extinction values of bayestar
-    E_individual_bayestar = np.array([bayestar(coords, mode='samples') for coords in all_position])
-    E_mean_bayestar = np.einsum('jik,ij->i',E_individual_bayestar, prior_normalized)/5.
+    E_individual_bayestar = np.array([
+        bayestar(coords, mode='samples') for coords in all_position
+    ])
+    n_samples_bayestar = E_individual_bayestar.shape[2]
+    E_mean_bayestar = np.einsum(
+        'jik,ij->i',
+        E_individual_bayestar,
+        prior_normalized
+    ) / n_samples_bayestar
     res = (E_individual_bayestar-E_mean_bayestar.reshape(1,-1,1))
-    E_sigma_bayestar = (np.einsum('jik,ij->i',res**2,prior_normalized)/5.)**0.5
-    
-    # SFD : 2D
+    E_sigma_bayestar = np.sqrt(
+        np.einsum('jik,ij->i', res**2, prior_normalized) / n_samples_bayestar
+    )
+
+    # SFD: 2D
     E_individual_sfd = np.array([sfd(coords) for coords in all_position])
     E_mean_sfd = np.mean(E_individual_sfd, axis=0)
         
@@ -76,7 +96,8 @@ def calculate_E(fn):
     E_mean_planck = np.mean(E_individual_planck, axis=0)
 
     # Saving the output
-    with h5py.File('data/xp_dustmap_match/'+f'xp_reddening_match_{idx}.h5', 'w') as f:
+    fname_out = f'data/xp_dustmap_match/xp_reddening_match_{idx}.h5'
+    with h5py.File(fname_out, 'w') as f:
         f['E_mean_bayestar'] = E_mean_bayestar
         f['E_sigma_bayestar'] = E_sigma_bayestar
         f['E_mean_sfd'] = E_mean_sfd
@@ -85,9 +106,15 @@ def calculate_E(fn):
 
 from p_tqdm import p_map
 
-if __name__ =='__main__':
+
+def main():
     nprocess = 16
-    all_E_sigma = p_map(calculate_E , 
-                        fnames, 
-                        num_cpus = nprocess
-                        )      
+    all_E_sigma = p_map(
+        calculate_E, 
+        fnames, 
+        num_cpus = nprocess
+    )      
+
+
+if __name__ =='__main__':
+    main()
