@@ -72,6 +72,14 @@ def extract_fluxes(fid, match_source_ids=None, thin=1):
     n_wl = len(sample_wavelengths)
     n_b = 5
 
+    # Conversion from 2MASS Vega magnitudes to f_lambda,
+    # in units of (flux_scale) * W/m^2/nm
+    tmass_dm = np.array([0.91, 1.39, 1.85])
+    tmass_wl = np.array([1.235e-6, 1.662e-6, 2.159e-6])
+    C = 3631e-26 * 2.99792458e8 / tmass_wl**2 * 1e-9
+    tmass_f0 = C / flux_scale * 10**(-0.4*tmass_dm) # Flux of m_Vega=0 source
+    tmass_f0.shape = (1,3)
+
     # Conversion from unWISE reported fluxes to f_lambda,
     # in units of (flux_scale) * W/m^2/nm
     unwise_dm = np.array([2.699, 3.339])
@@ -80,13 +88,11 @@ def extract_fluxes(fid, match_source_ids=None, thin=1):
     unwise_f0 = C / flux_scale * 10**(-0.4*(22.5+unwise_dm))
     unwise_f0.shape = (1,2)
 
-    # Conversion from 2MASS Vega magnitudes to f_lambda,
-    # in units of (flux_scale) * W/m^2/nm
-    tmass_dm = np.array([0.91, 1.39, 1.85])
-    tmass_wl = np.array([1.235e-6, 1.662e-6, 2.159e-6])
-    C = 3631e-26 * 2.99792458e8 / tmass_wl**2 * 1e-9
-    tmass_f0 = C / flux_scale * 10**(-0.4*tmass_dm) # Flux of m_Vega=0 source
-    tmass_f0.shape = (1,3)
+    sample_wavelengths = np.hstack([
+        sample_wavelengths,
+        tmass_wl*1e9,
+        unwise_wl*1e9
+    ])
 
     # Load Gaia metadata
     meta_fn = f'data/xp_metadata/xp_metadata_{fid}.h5'
@@ -101,7 +107,7 @@ def extract_fluxes(fid, match_source_ids=None, thin=1):
         logging.info(f'{fid}: {len(idx_xp)} matches.')
 
         if len(idx_xp) == 0:
-            return None, None # No matches
+            return None, None, sample_wavelengths # No matches
 
         # Cut down d_meta
         d_meta = d_meta[idx_xp]
@@ -396,9 +402,9 @@ def extract_fluxes(fid, match_source_ids=None, thin=1):
         assert len(d[key]) == len(d['gdr3_source_id'])
 
     if match_source_ids is None:
-        return d
+        return d, sample_wavelengths
     else:
-        return d, idx_matches
+        return d, idx_matches, sample_wavelengths
 
 
 def main():
@@ -456,7 +462,11 @@ def main():
         for xp_fn in tqdm(xp_fnames):
             fid = xp_fn.split('_')[-1].split('.')[0]
 
-            d,idx_params = extract_fluxes(fid, d_params['gdr3_source_id'])
+            d,idx_params,wl = extract_fluxes(
+                fid,
+                match_source_ids=d_params['gdr3_source_id'],
+                thin=args.thin[1]
+            )
             if d is None:
                 continue
 
@@ -464,6 +474,8 @@ def main():
             d['stellar_type_err'] = d_params['params_err'][idx_params]
 
             append_to_h5_file(fout, d)
+
+        fout['flux'].attrs['sample_wavelengths'] = wl
 
     return 0
 
