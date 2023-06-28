@@ -34,7 +34,7 @@ import json
 from glob import glob
 from tqdm import tqdm
 
-#from xp_utils import XPSampler, sqrt_icov_eigen
+from xp_utils import XPSampler, sqrt_icov_eigen
 #from plot_utils import plot_corr, plot_mollweide, \
 #                      projection_grid, healpix_mean_map
 
@@ -854,7 +854,7 @@ def plot_gmm_prior(stellar_type_prior):
     ]
     
 
-    fig,ax = corner.corner(
+    fig = corner.corner(
         params,
         labels=labels,
         range=ranges,
@@ -1609,6 +1609,7 @@ def load_data(fname, type_err_floor=(0.02,0.02,0.02),
 
     return d_train, d_val, sample_wavelengths
     
+
 def save_as_h5(d, name):
     print(f'Saving as {name}')
     with h5py.File(name, 'w') as f:
@@ -1624,18 +1625,4 @@ def load_h5(name):
         for key in f.keys():
             d[key] = f[key][:]
     return d     
-    
-    
-if __name__=='__main__':
-    
-    data_fname = 'data/training/xp_nn_training_data.h5'
-    print(f'Loading training data from {data_fname} ...')
-    d_train, d_val, sample_wavelengths = load_data(data_fname)#, n_max=1024*32+150)
-    print(f'Loaded {len(d_train["plx"])} sources.')
 
-    print('Generating Gaussian Mixture Model prior on stellar type ...')
-    stellar_type_prior = GaussianMixtureModel(3, n_components=16)
-    stellar_type_prior.fit(d_train['stellar_type'])
-    stellar_type_prior.save('models/prior/gmm_prior')
-    print('  -> Plotting prior ...')
-    plot_gmm_prior(stellar_type_prior)
