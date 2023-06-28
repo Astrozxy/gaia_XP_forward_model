@@ -22,8 +22,7 @@ from xp_utils import XPSampler, sqrt_icov_eigen, calc_invs_eigen
 from model import FluxModel, GaussianMixtureModel, \
                               optimize_stellar_params, \
                               grid_search_stellar_params, \
-                              calc_stellar_fisher_hessian, \
-                              save_updated_stellar_params
+                              calc_stellar_fisher_hessian
 
 
 def load_data(fname):
@@ -98,7 +97,7 @@ def calc_param_cov(d):
         return_min_eivals=True
     )
 
-    err = np.empty((n_stars,5), dtype='f4')
+    err = np.empty((n_stars, 6), dtype='f4')
     for k,c in enumerate(cov):
         err[k] = np.sqrt(np.diag(c))
 
@@ -110,6 +109,7 @@ def calc_param_cov(d):
     # Combine all stellar parameters into one array
     d['stellar_params_est'] = np.concatenate([
         d['stellar_type_est'],
+        np.reshape(d['xi_est']),
         np.reshape(d['stellar_ext_est'], (-1,1)),
         np.reshape(d['plx_est'], (-1,1))
     ], axis=1)
@@ -227,7 +227,7 @@ def main():
 
     # Load stellar flux model and stellar type priors
     print('Loading trained flux model ...')
-    stellar_model = FluxModel.load('models/flux/xp_spectrum_model_final-Rv-1')
+    stellar_model = FluxModel.load('models/flux/xp_spectrum_model_final_lRv-1')
     print('Loading Gaussian Mixture Model prior on stellar type ...')
     stellar_type_prior = GaussianMixtureModel.load('models/prior/gmm_prior-1')
 
