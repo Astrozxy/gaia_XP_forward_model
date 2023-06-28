@@ -940,9 +940,10 @@ def grid_search_stellar_params(flux_model, data,
     type_grid.shape = (-1,3)
     ext_grid.shape = (-1,)
     plx_grid = np.ones_like(ext_grid)
+    xi_grid = np.zeros(ext_grid.shape, dtype='float32')
 
     # Calculate model flux over parameter grid, assuming plx = 1 mas
-    flux_grid = flux_model.predict_obs_flux(type_grid, np.zeros(ext_grid.shape, dtype='float32'), ext_grid,plx_grid)
+    flux_grid = flux_model.predict_obs_flux(type_grid, xi_grid, ext_grid,plx_grid)
     flux_grid_exp = tf.expand_dims(flux_grid, 1) # Shape = (param, 1, wavelength)
 
     n_stars = len(data['plx'])
@@ -1097,11 +1098,12 @@ def optimize_stellar_params(flux_model, data,
         n_type = 3
     n_wl = data['flux'].shape[1]
 
+    data['xi_est'] = np.zeros(data['plx_est'].shape, dtype='float32')
+    
     # Initial values of ln(extinction) and ln(parallax)
     ln_stellar_ext_all = np.log(np.clip(data['stellar_ext_est'], 1e-9, np.inf))
     ln_stellar_plx_all = np.log(np.clip(data['plx_est'], 1e-9, np.inf))
     xi_all = data['xi_est'].copy()
-    
 
     # Empty Tensors to hold batches of stellar parameters
     st_type_b = tf.Variable(tf.zeros((batch_size,n_type)))
@@ -1483,7 +1485,7 @@ def calc_stellar_fisher_hessian(stellar_model, data, gmm=None,
 
         prior_std = np.concatenate([
             st_type_err,
-            np.ones((data['xi_est'][idx].shape[0], 1)),
+            np.ones((data['xi_est'][idx].shape[0], 1)),# prior of xi: standard normal distribution
             np.reshape(data['stellar_ext_err'][idx], (-1,1)),
             np.reshape(data['plx_err'][idx], (-1,1))
         ], axis=1)
