@@ -824,8 +824,8 @@ def train(stage=0):
             idx_train=np.where(idx_hq_large_E)[0],
             optimize_stellar_model=True,
             optimize_stellar_params=True,
-            lr_model_init=1e-4,
-            lr_stars_init=1e-4,
+            lr_model_init=1e-7,
+            lr_stars_init=1e-5,
             batch_size=batch_size,
             n_epochs=n_epochs,
             var_update = ['atm','E','plx','xi'],
@@ -885,7 +885,7 @@ def train(stage=0):
         pct_good = np.count_nonzero(idx_good) / idx_good.size * 100
         print(f'Combined outliers: {100-pct_good:.3f}% of sources.')        
                 
-        idx_final_train  =  (d_train['stellar_ext_est']>0.1)& idx_good
+        idx_final_train  =   idx_good# & (d_train['stellar_ext_est']>0.1)
         print(f'Training on {100*np.where(idx_final_train)[0].shape[0]/len(idx_final_train)}% of sources.')
         
         n_epochs = 512
