@@ -109,7 +109,7 @@ def calc_param_cov(d):
     # Combine all stellar parameters into one array
     d['stellar_params_est'] = np.concatenate([
         d['stellar_type_est'],
-        np.reshape(d['xi_est']),
+        np.reshape(d['xi_est'], (-1,1)),
         np.reshape(d['stellar_ext_est'], (-1,1)),
         np.reshape(d['plx_est'], (-1,1))
     ], axis=1)
@@ -227,7 +227,7 @@ def main():
 
     # Load stellar flux model and stellar type priors
     print('Loading trained flux model ...')
-    stellar_model = FluxModel.load('models/flux/xp_spectrum_model_final_lRv-1')
+    stellar_model = FluxModel.load('models/flux/xp_spectrum_model_final_Rv-1')
     print('Loading Gaussian Mixture Model prior on stellar type ...')
     stellar_type_prior = GaussianMixtureModel.load('models/prior/gmm_prior-1')
 
