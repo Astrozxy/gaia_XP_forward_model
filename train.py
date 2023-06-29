@@ -263,7 +263,7 @@ def train(data_fname, output_dir, stage=0):
 
     if stage<2:
          
-        d_val = load_h5(full_fn('train/d_val.h5'))
+        d_val = load_h5(full_fn('data/d_val.h5'))
         d_train = load_h5(full_fn('data/dtrain_final_wo_Rv.h5'))
         
         stellar_model = FluxModel.load(
