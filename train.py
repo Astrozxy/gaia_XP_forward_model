@@ -6,8 +6,7 @@ import os
 import os.path
 
 from xp_utils import XPSampler, sqrt_icov_eigen, calc_invs_eigen
-from model import FluxModel, GaussianMixtureModel, save_as_h5, load_h5, \
-                  plot_gmm_prior, train_stellar_model
+from model import *
 
 
 
