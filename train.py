@@ -83,7 +83,11 @@ def train(data_fname, output_dir, stage=0):
     loss_hist = []
 
     # Ensure that output directories exist
-    path_list = ['data', 'models/flux', 'index', 'hist_loss']
+    path_list = [
+        'data', 'plots',
+        'models/prior', 'models/flux',
+        'index', 'hist_loss'
+    ]
     for p in path_list:
         Path(os.path.join(output_dir,p)).mkdir(exist_ok=True, parents=True)
 
@@ -92,11 +96,11 @@ def train(data_fname, output_dir, stage=0):
         return os.path.join(output_dir, fn)
     
     if stage == 0:        
-        
         # Stage 0, begin without initial stellar model
         print(f'Loading training data from {data_fname} ...')
         d_train, d_val, sample_wavelengths = load_training_data(data_fname)
-        print(f'Loaded {len(d_train["plx"])} sources.')
+        n_train, n_val = [len(d['plx']) for d in (d_train,d_val)]
+        print(f'Loaded {n_train} ({n_val}) training (validation) sources.')
         
         # Generate GMM prior
         print('Generating Gaussian Mixture Model prior on stellar type ...')
@@ -104,17 +108,17 @@ def train(data_fname, output_dir, stage=0):
         stellar_type_prior.fit(d_train['stellar_type'])
         stellar_type_prior.save(full_fn('models/prior/gmm_prior'))
         print('  -> Plotting prior ...')
-        plot_gmm_prior(stellar_type_prior)
+        plot_gmm_prior(stellar_type_prior, base_path=output_dir)
 
         # Initial guess of xi
-        d_train['xi'] = np.zeros(len(d_train["plx"]), dtype='f4')
-        d_val['xi'] = np.zeros(len(d_val["plx"]), dtype='f4')
+        d_train['xi'] = np.zeros(n_train, dtype='f4')
+        d_val['xi'] = np.zeros(n_val, dtype='f4')
 
         save_as_h5(d_val, full_fn('data/d_val.h5'))
         save_as_h5(d_train, full_fn('data/d_train.h5'))
         
         # Initial weight: equal for all stars
-        weights_per_star = np.ones(len(d_train["plx"]), dtype='f4')
+        weights_per_star = np.ones(n_train, dtype='f4')
         
         # Initialize the parameter estimates at their measured (input) values
         for key in ('stellar_type', 'xi','stellar_ext', 'plx'):
