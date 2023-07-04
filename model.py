@@ -35,6 +35,7 @@ from glob import glob
 from tqdm import tqdm
 
 from xp_utils import XPSampler, sqrt_icov_eigen
+import plot_utils
 #from plot_utils import plot_corr, plot_mollweide, \
 #                      projection_grid, healpix_mean_map
 
@@ -834,7 +835,7 @@ class GaussianMixtureModel(snt.Module):
         return z
 
 
-def plot_gmm_prior(stellar_type_prior):
+def plot_gmm_prior(stellar_type_prior, base_path='.'):
     # Plot samples from prior
     import corner
 
@@ -848,12 +849,10 @@ def plot_gmm_prior(stellar_type_prior):
     ]
 
     ranges = [
-        (14., 2.),
-        (-2.5, 1.),
-        (5.5, 0.)
+        plot_utils.choose_lim(p, pct=[0.1,99.9], expand=0.4)
+        for p in params.T
     ]
     
-
     fig = corner.corner(
         params,
         labels=labels,
@@ -862,10 +861,15 @@ def plot_gmm_prior(stellar_type_prior):
         quantiles=[0.16, 0.5, 0.84],
         levels=[0.68,0.95,0.99],
         show_titles=True,
-        pcolor_kwargs = {'cmap':cm.Blues}
+        color='midnightblue'
+        #pcolor_kwargs={'cmap':cm.Blues}
     )
 
-    fig.savefig(f'plots/stellar_prior_samples_{n_comp:02d}components')
+    fn = os.path.join(
+        base_path, 'plots',
+        f'stellar_prior_samples_{n_comp:02d}components'
+    )
+    fig.savefig(fn)
     plt.close(fig)
 
     # Plot 2D marginal distributions of prior
@@ -879,38 +883,44 @@ def plot_gmm_prior(stellar_type_prior):
     lnp = stellar_type_prior.ln_prob(param_grid).numpy()
     lnp.shape = s
 
-    fig,ax_arr = plt.subplots(1,3, figsize=(6,2))
+    for suffix,norm in [('linear',Normalize),('log',LogNorm)]:
+        fig,ax_arr = plt.subplots(1,3, figsize=(6,2), layout='constrained')
 
-    for k,ax in enumerate(ax_arr.flat):
-        labels_k = [l for i,l in enumerate(labels) if i != k]
-        ranges_k = [r for i,r in enumerate(ranges) if i != k]
+        for k,ax in enumerate(ax_arr.flat):
+            labels_k = [l for i,l in enumerate(labels) if i != k]
+            ranges_k = [r for i,r in enumerate(ranges) if i != k]
 
-        lnp_marginal = logsumexp(lnp, axis=k)
-        lnp_marginal -= np.max(lnp_marginal)
+            lnp_marginal = logsumexp(lnp, axis=k)
+            lnp_marginal -= np.max(lnp_marginal)
 
-        ax.imshow(
-            np.exp(lnp_marginal.T),
-            origin='lower',
-            extent=ranges_k[0]+ranges_k[1],
-            interpolation='nearest',
-            aspect='auto'
+            ax.imshow(
+                np.exp(lnp_marginal.T),
+                origin='lower',
+                extent=ranges_k[0]+ranges_k[1],
+                interpolation='nearest',
+                aspect='auto',
+                norm=norm()
+            )
+
+            ax.set_xlabel(labels_k[0])
+            ax.set_ylabel(labels_k[1])
+            ax.set_xlim(ranges_k[0])
+            ax.set_ylim(ranges_k[1])
+
+        #fig.subplots_adjust(
+        #    left=0.06,
+        #    right=0.98,
+        #    bottom=0.17,
+        #    top=0.95,
+        #    wspace=0.32
+        #)
+
+        fn = os.path.join(
+            base_path, 'plots',
+            f'stellar_prior_marginals_{n_comp:02d}components_{suffix}'
         )
-
-        ax.set_xlabel(labels_k[0])
-        ax.set_ylabel(labels_k[1])
-        ax.set_xlim(ranges_k[0])
-        ax.set_ylim(ranges_k[1])
-
-    fig.subplots_adjust(
-        left=0.06,
-        right=0.98,
-        bottom=0.17,
-        top=0.95,
-        wspace=0.32
-    )
-
-    fig.savefig(f'plots/stellar_prior_marginals_{n_comp:02d}components')
-    plt.close(fig)
+        fig.savefig(fn)
+        plt.close(fig)
 
 
 def grid_search_stellar_params(flux_model, data,
