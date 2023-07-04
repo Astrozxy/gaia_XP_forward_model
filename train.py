@@ -6,8 +6,7 @@ import os
 import os.path
 
 from xp_utils import XPSampler, sqrt_icov_eigen, calc_invs_eigen
-from model import FluxModel, GaussianMixtureModel, save_as_h5, load_h5, \
-                  plot_gmm_prior, train_stellar_model
+from model import *
 
 
 
@@ -268,7 +267,7 @@ def train(data_fname, output_dir, stage=0):
 
     if stage<2:
          
-        d_val = load_h5(full_fn('train/d_val.h5'))
+        d_val = load_h5(full_fn('data/d_val.h5'))
         d_train = load_h5(full_fn('data/dtrain_final_wo_Rv.h5'))
         
         stellar_model = FluxModel.load(
