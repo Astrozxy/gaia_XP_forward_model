@@ -121,9 +121,14 @@ class FluxModel(snt.Module):
         self.predict_intrinsic_ln_flux(tf.zeros([1,n_input]))
         self.predict_ln_ext_curve(tf.zeros([1, 1]))
         
-        # Load the initial guess of the extinction curve
-        dc_drv = np.load('initial_guess.npy').astype('float32')
-        self._ext_slope.assign(dc_drv.reshape(1,-1))
+        # Initial guess of the extinction curve
+        R0_guess = np.log(2 * (sample_wavelengths / 550.)**(-1.5))
+        R0_guess = R0_guess.astype('float32')
+        R1_guess = (sample_wavelengths - 550.)/(992.-392.)
+        R1_guess = R1_guess.astype('float32')
+        
+        self._ext_bias.assign(R0_guess.reshape(1,-1))
+        self._ext_slope.assign(R1_guess.reshape(1,-1))
         
         # Count the total number of weights
         self._n_flux_weights = sum([int(tf.size(l.w)) for l in self._layers])   
@@ -200,7 +205,7 @@ class FluxModel(snt.Module):
         # Penalty on stellar model nn weights
         for layer in self._layers:
             l2_sum = l2_sum + tf.reduce_sum(layer.w**2)
-        l2_sum = self._l2 * l2_sum / self._n_flux_weights
+        l2_sum = self._l2 * l2_sum / float(self._n_flux_weights)
         # Penalty on variation of the extinction curve
         l2_sum = l2_sum + self._l2_ext_curve*tf.reduce_mean(self._ext_slope**2)
         return  l2_sum
@@ -276,7 +281,7 @@ def grads_stellar_model(stellar_model,
                         stellar_extinction, stellar_parallax,
                         flux_obs, flux_sqrticov,
                         extra_weight,
-                        chi2_turnover=tf.constant(10.),        
+                        chi2_turnover=tf.constant(20.),        
                         model_update = ['stellar_model', 'ext_curve_w', 'ext_curve_b'],
                         ):
     """
@@ -299,6 +304,7 @@ def grads_stellar_model(stellar_model,
                  'flux_model/flux/b:0',
                  'flux_model/flux/w:0'
             ]
+            
     if 'ext_curve_b' in model_update:
         trainable_var += [
              'flux_model/ext_bias:0',
@@ -323,6 +329,7 @@ def grads_stellar_model(stellar_model,
 
         # Suppress large chi^2 values
         chi2 = chi2_factor * tf.math.asinh(chi2/chi2_factor)
+
         # Average individual chi^2 values
         chi2 = tf.reduce_sum(extra_weight*chi2) / tf.reduce_sum(extra_weight)
         # Add in penalty (generally, for model complexity)
@@ -345,7 +352,7 @@ def grads_stellar_params(stellar_model,
                          ln_stellar_plx, stellar_plx_obs, stellar_plx_sigma,
                          flux_obs, flux_sqrticov,
                          extra_weight,
-                         chi2_turnover=tf.constant(10.),
+                         chi2_turnover=tf.constant(20.),
                          var_update = ['atm','E','plx','xi'],
                         ):
     # Scale at which chi^2 growth is suppressed

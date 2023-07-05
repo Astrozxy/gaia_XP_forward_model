@@ -9,8 +9,6 @@ from xp_utils import XPSampler, sqrt_icov_eigen, calc_invs_eigen
 from model import *
 
 
-
-
 def load_training_data(fname, validation_frac=0.2, seed=1):
     # Load training data
     with h5py.File(fname, 'r') as f:
@@ -91,7 +89,7 @@ def train(data_fname, output_dir, stage=0):
         return os.path.join(output_dir, fn)
     
     if stage == 0:        
-        
+        '''
         # Stage 0, begin without initial stellar model
         print(f'Loading training data from {data_fname} ...')
         d_train, d_val, sample_wavelengths = load_training_data(data_fname)
@@ -111,22 +109,45 @@ def train(data_fname, output_dir, stage=0):
 
         save_as_h5(d_val, full_fn('data/d_val.h5'))
         save_as_h5(d_train, full_fn('data/d_train.h5'))
+        '''
+        stellar_type_prior = GaussianMixtureModel.load('models/prior/gmm_prior-1')
+        d_val = load_h5(full_fn('data/d_val.h5'))
+        d_train = load_h5(full_fn('data/d_train.h5'))
+        sample_wavelengths = np.load('wl.npy').astype('f4')
+                
+        all_ln_prior = []
+        teff_ini, feh_ini, logg_ini= d_train['stellar_type'].T
+        for i in tqdm(range(int(len(teff_ini)/10000)+1)):
+            ln_prior = stellar_type_prior.ln_prob(
+                np.vstack([
+                      teff_ini[i*10000: (i+1)*10000], 
+                        feh_ini[i*10000: (i+1)*10000], 
+                        logg_ini[i*10000: (i+1)*10000]]).T
+            ).numpy()
+            all_ln_prior.append(ln_prior)
+        all_ln_prior = np.hstack(all_ln_prior)
+        all_prior = np.exp(all_ln_prior)
+        all_prior /= np.max(all_ln_prior)
         
-        # Initial weight: equal for all stars
-        weights_per_star = np.ones(len(d_train["plx"]), dtype='f4')
+        # Do not strengthen stars with extreme metalicity
+        all_prior[feh_ini<-2.] = 1.
+        all_prior[feh_ini>1.] = 1.       
+        
+        teff_ini, feh_ini, logg_ini = 0,0,0
+        
+        # Weigh stars for better representation
+        #weights_per_star = np.exp(-d_train['stellar_type'][:,1]/2.)
+        weights_per_star = (1./(all_prior+0.2)).astype('f4') 
+        #weights_per_star = np.ones(d_train['plx'].shape, dtype='f4')
         
         # Initialize the parameter estimates at their measured (input) values
-        for key in ('stellar_type', 'xi','stellar_ext', 'plx'):
+        for key in ('stellar_type', 'xi', 'stellar_ext', 'plx'):
             d_train[f'{key}_est'] = d_train[key].copy()
             d_val[f'{key}_est'] = d_train[key].copy()
         
         print('Creating flux model ...')
         n_stellar_params = d_train['stellar_type'].shape[1]
         p_low,p_high = np.percentile(d_train['stellar_type'], [16.,84.], axis=0)
-
-        # Remove infrared constraints if norm_dg is bad
-        good_norm_dg = d_train['norm_dg']<-10.
-        d_train['flux_sqrticov'][~good_norm_dg, -5:, -5:] *= 0.
         
         print('Training flux model on high-quality data ...')
         # Select a subset of "high-quality" stars with good measurements
@@ -148,7 +169,7 @@ def train(data_fname, output_dir, stage=0):
             hidden_size=32,
             l2=1., l2_ext_curve=1.
          )   
-    
+        
         # First, train the model with stars with good measurements,
         # with fixed slope of ext_curve
         ret = train_stellar_model(
@@ -212,7 +233,7 @@ def train(data_fname, output_dir, stage=0):
 
         idx_flux_good = identify_flux_outliers(
             d_train, stellar_model,
-            chi2_dof_clip=5.,
+            chi2_dof_clip=10.,
             #chi_indiv_clip=20.
         )
         
@@ -222,7 +243,7 @@ def train(data_fname, output_dir, stage=0):
         idx_good = idx_params_good & idx_flux_good
         pct_good = 100*np.mean(idx_good)
         print(f'Combined outliers: {100-pct_good:.3f}% of sources.')
-
+        
         # Finally, simultaneously train the stellar model and update stellar
         # parameters, using all the (non-outlier) data
         print('Training flux model and optimizing all non-outlier stars ...')
@@ -241,20 +262,6 @@ def train(data_fname, output_dir, stage=0):
             var_update = ['atm','E','plx'],
         )
         loss_hist.append(ret)
-        
-        # Calculate hq standard again, with a higher limit on chi2
-        idx_flux_good = identify_flux_outliers(
-            d_train, stellar_model,
-            chi2_dof_clip=10.,
-            #chi_indiv_clip=20.
-        )
-        
-        pct_good = 100*np.mean(idx_flux_good)
-        print(f'Flux outliers: {100-pct_good:.3f}% of sources.')
-
-        idx_good = idx_params_good & idx_flux_good
-        pct_good = 100*np.count_nonzero(idx_good)
-        print(f'Combined outliers: {100-pct_good:.3f}% of sources.')
         
         np.save(full_fn('index/idx_good_wo_Rv.npy'), idx_good)
         stellar_model.save(full_fn('models/flux/xp_spectrum_model_final'))
@@ -390,10 +397,10 @@ def train(data_fname, output_dir, stage=0):
         d_train = load_h5(full_fn('data/dtrain_Rv_initial.h5'))
         d_val = load_h5(full_fn('data/d_val.h5'))
 
-        idx_hq_large_E = np.load(full_fn('index/idx_with_Rv_good.npy'))
+        idx_hq = np.load(full_fn('index/idx_good_wo_Rv.npy')) 
         
         weights_per_star = down_sample_weighing( 
-            d_train['xi_est'][idx_hq_large_E],
+            d_train['xi_est'][idx_hq],
             d_train['xi_est'], 
             bin_edges = np.linspace(-1, 1, n_bins + 1)
         )
@@ -404,7 +411,7 @@ def train(data_fname, output_dir, stage=0):
             stellar_model,
             d_train, d_val,
             weights_per_star,
-            idx_train=np.where(idx_hq_large_E)[0],
+            idx_train=np.where(idx_hq)[0],
             optimize_stellar_model=True,
             optimize_stellar_params=True,
             lr_model_init=1e-7,
@@ -429,8 +436,7 @@ def train(data_fname, output_dir, stage=0):
         
         d_train = load_h5(full_fn('data/dtrain_Rv_intermediate_0.h5'))
         d_val = load_h5(full_fn('data/d_val.h5'))
-        idx_hq_large_E = np.load(full_fn('index/idx_with_Rv_good.npy'))
-        
+     
         # Optimize all stellar params, in order to pick up 
         # stars that were rejected due to extinction variation law
         
@@ -456,13 +462,17 @@ def train(data_fname, output_dir, stage=0):
         d_val = load_h5(full_fn('data/d_val.h5'))
         
         # remove outliers 
-        idx_params_good = identify_outlier_stars(d_train)
+        idx_params_good = identify_outlier_stars(d_train,
+                           sigma_clip_teff=10.,
+                           sigma_clip_logg=10.,
+                           sigma_clip_feh=10.,
+                                                )
         pct_good = 100*np.mean(idx_params_good)
         print(f'Parameter outliers: {100-pct_good:.3g}% of sources.')
 
         idx_flux_good = identify_flux_outliers(
             d_train, stellar_model,
-            chi2_dof_clip=5.,
+            chi2_dof_clip=10.,
             #chi_indiv_clip=20.
         )
         pct_good = 100*np.mean(idx_flux_good)
@@ -476,8 +486,7 @@ def train(data_fname, output_dir, stage=0):
         pct_use = 100*np.mean(idx_final_train)
         print(f'Training on {pct_use:.3g}% of sources.')
 
-        
-        n_epochs = 512
+        n_epochs = 256
         weights_per_star = down_sample_weighing( 
             d_train['xi_est'][idx_final_train],
             d_train['xi_est'], 
@@ -516,7 +525,7 @@ def train(data_fname, output_dir, stage=0):
         )         
         
         for key in ('stellar_type', 'xi', 'stellar_ext', 'plx'):
-            d_val[f'{key}_est'] = d_train[key].copy()
+            d_val[f'{key}_est'] = d_val[key].copy()
         
         ret = train_stellar_model(
             stellar_model,
