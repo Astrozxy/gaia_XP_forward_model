@@ -119,8 +119,8 @@ def extract_fluxes(fid, match_source_ids=None, thin=1):
         idx_good &= (d_meta['parallax']/d_meta['parallax_error'] > 3.)
         # Gaia astrometric fidelity
         idx_good &= (d_meta['fidelity_v2'] > 0.5)
-        # Gaia BP/RP excess
-        idx_good &= (d_meta['phot_bp_rp_excess_factor'] < 1.3)
+        # Gaia BP/RP excess (cut weakened, so as not to eliminate M-dwarfs)
+        #idx_good &= (d_meta['phot_bp_rp_excess_factor'] < 2.0)
         #idx_xp = idx_xp[good_idx]
         #idx_params = idx_params[good_idx]
 
@@ -136,6 +136,8 @@ def extract_fluxes(fid, match_source_ids=None, thin=1):
         d_meta = d_meta[idx_good]
 
     n = len(d_meta) # Number of XP sources selected
+    if n == 0:
+        return None, None, sample_wavelengths # No matches
 
     # The GDR3 source IDs of the sources that will be in the output
     gdr3_source_id = d_meta['source_id']
@@ -292,8 +294,9 @@ def extract_fluxes(fid, match_source_ids=None, thin=1):
         f'{pct_unwise}% pass quality cuts.'
     )
 
+    # Replace bad fluxes with something +- infinity
     for b,idx in enumerate(idx_unwise_good.T):
-        unwise_flux[~idx,b] = np.nanmedian(unwise_flux[:,b])
+        unwise_flux[~idx,b] = 1e4 * unwise_f0[0,b] # A typical WISE flux value
         unwise_flux_err[~idx,b] = np.inf
         unwise_flux_var[~idx,b] = np.inf
 
@@ -345,16 +348,25 @@ def extract_fluxes(fid, match_source_ids=None, thin=1):
     pct_tmass = 100 * np.mean(np.isfinite(tmass_mag), axis=0)
     logging.info(f'{fid}: 2MASS: {pct_tmass}% pass cuts.')
 
+    # Replace NaN 2MASS mags or mag_errs with something +- infinity
+    for b in range(tmass_mag.shape[1]):
+        idx_nan = ~(
+            np.isfinite(tmass_mag[:,b])
+          & np.isfinite(tmass_mag_err[:,b])
+        )
+        tmass_mag[idx_nan,b] = 12. # A typical 2MASS magnitude
+        tmass_mag_err[idx_nan,b] = np.inf
+
     # Calculate 2MASS fluxes, in units of the flux scale
     # (which is 10^{-18} W/m^2/nm, by default)
     tmass_flux = 10**(-0.4*tmass_mag) * tmass_f0
     tmass_flux_err = 2.5/np.log(10) * tmass_mag_err * tmass_flux
 
-    # Replace NaNs with default values
-    for b in range(tmass_flux.shape[1]):
-        idx_nan = ~np.isfinite(tmass_flux[:,b])
-        tmass_flux[idx_nan,b] = np.nanmedian(tmass_flux[:,b])
-        tmass_flux_err[idx_nan,b] = np.inf
+    ## Replace NaNs with default values
+    #for b in range(tmass_flux.shape[1]):
+    #    idx_nan = ~np.isfinite(tmass_flux[:,b])
+    #    tmass_flux[idx_nan,b] = np.nanmedian(tmass_flux[:,b])
+    #    tmass_flux_err[idx_nan,b] = np.inf
 
     # Paste in 2MASS photometric bands
     flux[idx_insert_tmass,-5:-2] = tmass_flux
@@ -363,8 +375,25 @@ def extract_fluxes(fid, match_source_ids=None, thin=1):
         flux_sqrticov[idx_insert_tmass,-5+b,-5+b] = 1/tmass_flux_err[:,b]
 
     # Check that there are no NaNs in the fluxes
-    assert np.all(np.isfinite(flux))
-    assert np.all(np.isfinite(flux_sqrticov))
+    try:
+        assert np.all(np.isfinite(flux))
+    except AssertionError as err:
+        print('Non-finite fluxes encountered here:')
+        idx = np.where(~np.isfinite(flux))
+        print(idx)
+        print('Non-finite values:')
+        print(flux[idx])
+        raise err
+
+    try:
+        assert np.all(np.isfinite(flux_sqrticov))
+    except AssertionError as err:
+        print('Non-finite sqrt(flux_covariance) encountered here:')
+        idx = np.where(~np.isfinite(flux_sqrticov))
+        print(idx)
+        print('Non-finite values:')
+        print(flux_sqrticov[idx])
+        raise err
 
     # Compile all the information
     d = {
