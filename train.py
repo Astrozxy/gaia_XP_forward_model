@@ -6,9 +6,9 @@ import os
 import os.path
 
 from xp_utils import XPSampler, sqrt_icov_eigen, calc_invs_eigen
-from model import corr_matrix, FluxModel, chi_band, gaussian_prior, grads_stellar_model,\
+from model import GaussianMixtureModel, FluxModel, chi_band, gaussian_prior, grads_stellar_model,\
         grads_stellar_params, get_batch_iterator,  identify_outlier_stars, identify_flux_outliers,\
-        train_stellar_model, GaussianMixtureModel, plot_gmm_prior,assign_variable_padded,\
+        train_stellar_model, plot_gmm_prior,assign_variable_padded, corr_matrix,\
         calc_stellar_fisher_hessian, load_data, save_as_h5, load_h5
 
 
