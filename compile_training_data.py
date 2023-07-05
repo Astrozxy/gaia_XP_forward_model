@@ -172,8 +172,8 @@ def extract_fluxes(fid, match_source_ids=None, thin=1):
     n_noE = n - len(idx_insert_E)
     pct_noE = 100 * n_noE / n
     logging.info(f'{fid}: {n_noE} have no reddening ({pct_noE:.3g}%).')
-    stellar_ext = np.full(n, np.nan)
-    stellar_ext_err = np.full(n, np.nan)
+    stellar_ext = np.full(n, 0.)
+    stellar_ext_err = np.full(n, np.inf)
     stellar_ext_source = np.full(n, '', dtype='S12')
     # Order or priority: Bayestar, SFD (only above plane), nothing
     idx = np.isfinite(d_E['E_mean_bayestar'])
@@ -374,27 +374,6 @@ def extract_fluxes(fid, match_source_ids=None, thin=1):
     for b in range(3):
         flux_sqrticov[idx_insert_tmass,-5+b,-5+b] = 1/tmass_flux_err[:,b]
 
-    # Check that there are no NaNs in the fluxes
-    try:
-        assert np.all(np.isfinite(flux))
-    except AssertionError as err:
-        print('Non-finite fluxes encountered here:')
-        idx = np.where(~np.isfinite(flux))
-        print(idx)
-        print('Non-finite values:')
-        print(flux[idx])
-        raise err
-
-    try:
-        assert np.all(np.isfinite(flux_sqrticov))
-    except AssertionError as err:
-        print('Non-finite sqrt(flux_covariance) encountered here:')
-        idx = np.where(~np.isfinite(flux_sqrticov))
-        print(idx)
-        print('Non-finite values:')
-        print(flux_sqrticov[idx])
-        raise err
-
     # Compile all the information
     d = {
         'gdr3_source_id': gdr3_source_id,
@@ -407,6 +386,16 @@ def extract_fluxes(fid, match_source_ids=None, thin=1):
         'stellar_ext_err': stellar_ext_err,
         'stellar_ext_source': stellar_ext_source
     }
+
+    # Check for NaN in fluxes and extinctions
+    for key in ('flux','flux_err','stellar_ext','stellar_ext_err'):
+        try:
+            assert np.all(~np.isnan(d[key]))
+        except AssertionError as err:
+            print(f'NaN {key} encountered here:')
+            idx = np.where(np.isnan(d[key]))
+            print(idx)
+            raise err
 
     # Gaia photometry (not used in model)
     for band in ('g', 'bp', 'rp'):
@@ -429,6 +418,15 @@ def extract_fluxes(fid, match_source_ids=None, thin=1):
     # Check that all arrays have same length
     for key in d:
         assert len(d[key]) == len(d['gdr3_source_id'])
+
+    # Ensure that certain columns are in float32 format
+    f4_keys = [
+        'stellar_ext', 'stellar_ext_err',
+        'plx', 'plx_err',
+        'flux', 'flux_err', 'flux_sqrticov'
+    ]
+    for key in f4_keys:
+        d[key] = f[key].astype('f4')
 
     if match_source_ids is None:
         return d, sample_wavelengths
@@ -501,7 +499,10 @@ def main():
 
             d['stellar_type'] = d_params['params_est'][idx_params]
             d['stellar_type_err'] = d_params['params_err'][idx_params]
+            d['stellar_type'] = d['stellar_type'].astype('f4')
+            d['stellar_type_err'] = d['stellar_type_err'].astype('f4')
 
+            # Append data from this XP file to the output file
             append_to_h5_file(fout, d)
 
         fout['flux'].attrs['sample_wavelengths'] = wl
