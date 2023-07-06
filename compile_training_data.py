@@ -271,7 +271,7 @@ def extract_fluxes(fid, match_source_ids=None, thin=1):
 
     # Add 1% uncertainties to unWISE (in quadrature)
     unwise_flux_var = unwise_flux_err**2 + (0.1*unwise_flux)**2
-    unwise_flux_err = np.sqrt(unwise_flux_err)
+    unwise_flux_err = np.sqrt(unwise_flux_var)
 
     # Apply quality cuts to unWISE
     idx_unwise_good = (
@@ -296,15 +296,15 @@ def extract_fluxes(fid, match_source_ids=None, thin=1):
 
     # Replace bad fluxes with something +- infinity
     for b,idx in enumerate(idx_unwise_good.T):
-        unwise_flux[~idx,b] = 1e4 * unwise_f0[0,b] # A typical WISE flux value
+        unwise_flux[~idx,b] = np.nan
         unwise_flux_err[~idx,b] = np.inf
         unwise_flux_var[~idx,b] = np.inf
 
     # Paste in WISE photometric bands
     flux[idx_insert_unwise,-2:] = unwise_flux
     flux_err[idx_insert_unwise,-2:] = unwise_flux_err
-    flux_sqrticov[idx_insert_unwise,-2,-2] = 1/unwise_flux_err[:,0]
-    flux_sqrticov[idx_insert_unwise,-1,-1] = 1/unwise_flux_err[:,1]
+    #flux_sqrticov[idx_insert_unwise,-2,-2] = 1/unwise_flux_err[:,0]
+    #flux_sqrticov[idx_insert_unwise,-1,-1] = 1/unwise_flux_err[:,1]
     
     # Load 2MASS photometry
     tmass_fname = os.path.join(
@@ -348,31 +348,42 @@ def extract_fluxes(fid, match_source_ids=None, thin=1):
     pct_tmass = 100 * np.mean(np.isfinite(tmass_mag), axis=0)
     logging.info(f'{fid}: 2MASS: {pct_tmass}% pass cuts.')
 
-    # Replace NaN 2MASS mags or mag_errs with something +- infinity
-    for b in range(tmass_mag.shape[1]):
-        idx_nan = ~(
-            np.isfinite(tmass_mag[:,b])
-          & np.isfinite(tmass_mag_err[:,b])
-        )
-        tmass_mag[idx_nan,b] = 12. # A typical 2MASS magnitude
-        tmass_mag_err[idx_nan,b] = np.inf
-
     # Calculate 2MASS fluxes, in units of the flux scale
     # (which is 10^{-18} W/m^2/nm, by default)
     tmass_flux = 10**(-0.4*tmass_mag) * tmass_f0
     tmass_flux_err = 2.5/np.log(10) * tmass_mag_err * tmass_flux
 
-    ## Replace NaNs with default values
-    #for b in range(tmass_flux.shape[1]):
-    #    idx_nan = ~np.isfinite(tmass_flux[:,b])
+    # Replace NaN 2MASS flux errors with default values
+    for b in range(tmass_flux.shape[1]):
+        idx_nan = ~np.isfinite(tmass_flux_err[:,b])
+        tmass_flux_err[idx_nan,b] = np.inf
     #    tmass_flux[idx_nan,b] = np.nanmedian(tmass_flux[:,b])
-    #    tmass_flux_err[idx_nan,b] = np.inf
 
     # Paste in 2MASS photometric bands
     flux[idx_insert_tmass,-5:-2] = tmass_flux
     flux_err[idx_insert_tmass,-5:-2] = tmass_flux_err
-    for b in range(3):
-        flux_sqrticov[idx_insert_tmass,-5+b,-5+b] = 1/tmass_flux_err[:,b]
+    #for b in range(3):
+    #    flux_sqrticov[idx_insert_tmass,-5+b,-5+b] = 1/tmass_flux_err[:,b]
+
+    # Replace NaN fluxes or flux_errs from 2MASS/WISE with something +- infty
+    tmass_mag_filler = 12. # Typical 2MASS magnitude
+    tmass_flux_filler = 10**(-0.4*tmass_mag_filler) * tmass_f0
+    unwise_flux_filler = 1e4 * unwise_f0 # Typical WISE flux values
+    phot_flux_filler = np.hstack([
+        tmass_flux_filler.flat,
+        unwise_flux_filler.flat
+    ])
+    for b in range(5):
+        idx_nan = ~(
+            np.isfinite(flux[:,-5+b])
+          & np.isfinite(flux_err[:,-5+b])
+        )
+        flux[idx_nan,-5+b] = phot_flux_filler[b]
+        flux_err[idx_nan,-5+b] = np.inf
+
+    # Fill in 2MASS & WISE part of sqrt inverse flux covariance matrix
+    for b in range(5):
+        flux_sqrticov[:,-5+b,-5+b] = 1 / flux_err[:,b]
 
     # Compile all the information
     d = {
@@ -426,7 +437,7 @@ def extract_fluxes(fid, match_source_ids=None, thin=1):
         'flux', 'flux_err', 'flux_sqrticov'
     ]
     for key in f4_keys:
-        d[key] = f[key].astype('f4')
+        d[key] = d[key].astype('f4')
 
     if match_source_ids is None:
         return d, sample_wavelengths
@@ -486,6 +497,7 @@ def main():
     xp_fnames = xp_fnames[::args.thin[0]]
 
     with h5py.File(args.output, 'w') as fout:
+        # Loop over XP files, matching input stellar parameters to each file
         for xp_fn in tqdm(xp_fnames):
             fid = xp_fn.split('_')[-1].split('.')[0]
 
@@ -501,6 +513,18 @@ def main():
             d['stellar_type_err'] = d_params['params_err'][idx_params]
             d['stellar_type'] = d['stellar_type'].astype('f4')
             d['stellar_type_err'] = d['stellar_type_err'].astype('f4')
+
+            # Sanity checks on stellar types
+            for key in ('stellar_type','stellar_type_err'):
+                if np.any(np.isnan(d[key])):
+                    logging.error(f'{fid}: NaNs present in {key}.')
+
+            eps = np.finfo('f4').tiny
+            if np.any(d['stellar_type_err']) < eps:
+                logging.error(
+                    f'{fid}: '
+                    f'Tiny values present in stellar_type_err (<{eps}).'
+                )
 
             # Append data from this XP file to the output file
             append_to_h5_file(fout, d)
