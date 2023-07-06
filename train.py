@@ -1,6 +1,7 @@
 import numpy as np
 from argparse import ArgumentParser
 from pathlib import Path
+from tqdm import tqdm
 import h5py
 import os
 import os.path
@@ -77,7 +78,7 @@ def train(data_fname, output_dir, stage=0):
 
     # General training parameters
     n_epochs = 128
-    batch_size = 512
+    batch_size = 1024
     n_bins = 100
     
     loss_hist = []
@@ -133,14 +134,14 @@ def train(data_fname, output_dir, stage=0):
         all_prior /= np.max(all_ln_prior)
         
         # Do not strengthen stars with extreme metalicity
-        all_prior[feh_ini<-2.] = 1.
-        all_prior[feh_ini>1.] = 1.       
+        #all_prior[feh_ini<-2.] = 1.
+        #all_prior[feh_ini>1.] = 1.       
         
         teff_ini, feh_ini, logg_ini = 0,0,0
         
         # Weigh stars for better representation
         #weights_per_star = np.exp(-d_train['stellar_type'][:,1]/2.)
-        weights_per_star = (1./(all_prior+0.2)).astype('f4') 
+        weights_per_star = (1./(all_prior+0.02)).astype('f4') 
         #weights_per_star = np.ones(d_train['plx'].shape, dtype='f4')
 
         
@@ -393,7 +394,7 @@ def train(data_fname, output_dir, stage=0):
         
     if stage<3:
         
-        n_epochs = 256
+        n_epochs = 128
         
         stellar_model = FluxModel.load(
             full_fn('models/flux/xp_spectrum_model_initial_Rv-1')
@@ -444,7 +445,7 @@ def train(data_fname, output_dir, stage=0):
         # Optimize all stellar params, in order to pick up 
         # stars that were rejected due to extinction variation law
         
-        n_epochs = 256
+        n_epochs = 128
         
         weights_per_star = np.ones(len(d_train['plx']),dtype='f4')
         ret = train_stellar_model(
@@ -490,7 +491,6 @@ def train(data_fname, output_dir, stage=0):
         pct_use = 100*np.mean(idx_final_train)
         print(f'Training on {pct_use:.3g}% of sources.')
 
-        n_epochs = 256
         weights_per_star = down_sample_weighing( 
             d_train['xi_est'][idx_final_train],
             d_train['xi_est'], 
