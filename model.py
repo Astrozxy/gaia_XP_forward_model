@@ -639,6 +639,22 @@ def train_stellar_model(stellar_model,
             model_loss_hist.append(mod_loss)
             pbar_disp['mod_loss'] = mod_loss
 
+            if np.isnan(mod_loss):
+                check_dict = {
+                    'type_est': type_est_batch,
+                    'xi_est': xi_est_batch,
+                    'ext_est': ext_est_batch,
+                    'plx_est': plx_est_batch,
+                    'flux': flux_batch,
+                    'flux_sqrticov': flux_sqrticov_batch,
+                    'extra_weight': extra_weight_batch
+                }
+                print('NaN model loss!')
+                for key in check_dict:
+                    v = check_dict[key].numpy()
+                    print('  * NaN {key}? {np.any(np.isnan(v))}')
+                    raise ValueError('NaN model loss')
+
             chi_w1, chi_w2 = chi_band(stellar_model, 
                             #tf.constant(np.array([64, 65], dtype='int')), 
                             type_est_batch, xi_est_batch, 
@@ -667,11 +683,40 @@ def train_stellar_model(stellar_model,
             pbar_disp['st_loss'] = st_loss
             #pbar_disp['st_lr'] = opt_st_params._decayed_lr(tf.float32).numpy()
 
+            if np.isnan(st_loss):
+                check_dict = {
+                    'type_est (before update)': type_est[idx],
+                    'type_est (after update)': type_est_batch,
+                    'type_err': type_err_batch,
+                    'type_obs': type_obs_batch,
+                    'xi_est (before update)': xi_est[idx],
+                    'xi_est (after update)': xi_est_batch,
+                    'ln_ext_est (before update)': ln_ext_est[idx],
+                    'ln_ext_est (after update)': ln_ext_est_batch,
+                    'ext_obs': ext_obs_batch,
+                    'ext_err': ext_err_batch,
+                    'ln_plx_est (before update)': ln_plx_est[idx],
+                    'ln_plx_est (after update)': ln_plx_est_batch,
+                    'plx_obs': plx_obs_batch,
+                    'plx_err': plx_err_batch,
+                    'flux': flux_batch,
+                    'flux_sqrticov': flux_sqrticov_batch,
+                    'extra_weight': extra_weight_batch
+                }
+                print('NaN stellar loss!')
+                for key in check_dict:
+                    v = check_dict[key]
+                    if isinstance(v, tf.Tensor):
+                        v = v.numpy()
+                    print(f'  * NaN {key}? {np.any(np.isnan(v))}')
+                raise ValueError('NaN stellar loss')
+
             # Update estimated stellar parameters (for this batch)
             type_est[idx] = type_est_batch.numpy()
             xi_est[idx] = xi_est_batch.numpy()
             ln_ext_est[idx] = ln_ext_est_batch.numpy()
             ln_plx_est[idx] = ln_plx_est_batch.numpy()
+
 
         # Display losses in progress bar
         pbar.set_postfix(pbar_disp)
