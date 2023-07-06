@@ -19,6 +19,17 @@ def load_training_data(fname, validation_frac=0.2, seed=1):
         d = {key:f[key][:] for key in f.keys()}
         sample_wavelengths = f['flux'].attrs['sample_wavelengths'][:]
 
+    # Ensure that certain fields are in float32 format
+    f4_keys = [
+        'flux', 'flux_err', 'flux_sqrticov',
+        'flux_cov_eival_max', 'flux_cov_eival_min',
+        'plx', 'plx_err',
+        'stellar_ext', 'stellar_ext_err',
+        'stellar_type', 'stellar_type_err'
+    ]
+    for k in f4_keys:
+        d[k] = d[k].astype('f4')
+
     # Shuffle data, and put last X% into validation set
     rng = np.random.default_rng(seed=seed)
     n = len(d['gdr3_source_id'])
@@ -121,12 +132,13 @@ def train(data_fname, output_dir, stage=0):
                 
         all_ln_prior = []
         teff_ini, feh_ini, logg_ini= d_train['stellar_type'].T
-        for i in tqdm(range(int(len(teff_ini)/10000)+1)):
+        for i0 in tqdm(range(0,len(teff_ini),1024)):
             ln_prior = stellar_type_prior.ln_prob(
                 np.vstack([
-                      teff_ini[i*10000: (i+1)*10000], 
-                        feh_ini[i*10000: (i+1)*10000], 
-                        logg_ini[i*10000: (i+1)*10000]]).T
+                    teff_ini[i0:i0+1024],
+                    feh_ini[i0:i0+1024],
+                    logg_ini[i0:i0+1024]
+                ]).astype('f4').T
             ).numpy()
             all_ln_prior.append(ln_prior)
         all_ln_prior = np.hstack(all_ln_prior)
@@ -186,7 +198,7 @@ def train(data_fname, output_dir, stage=0):
             optimize_stellar_params=False,
             batch_size=batch_size,
             n_epochs=n_epochs,
-            model_update=['stellar_model',  'ext_curve_b'],
+            model_update=['stellar_model','ext_curve_b'],
         )
         loss_hist.append(ret)
         stellar_model.save(full_fn('models/flux/xp_spectrum_model_initial'))
@@ -204,7 +216,7 @@ def train(data_fname, output_dir, stage=0):
             lr_model_init=1e-5,
             batch_size=batch_size,
             n_epochs=n_epochs,
-            model_update=['stellar_model',  'ext_curve_b'],
+            model_update=['stellar_model','ext_curve_b'],
             var_update = ['atm','E','plx'],
         )
         loss_hist.append(ret)
