@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 
 import tensorflow as tf
 
-from tqdm import tqdm
+from tqdm.auto import tqdm
 
 import unittest
 
