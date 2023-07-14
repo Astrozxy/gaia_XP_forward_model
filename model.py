@@ -32,12 +32,13 @@ import h5py
 import os
 import json
 from glob import glob
-from tqdm import tqdm
+from tqdm.auto import tqdm
 
 from xp_utils import XPSampler, sqrt_icov_eigen
 import plot_utils
 #from plot_utils import plot_corr, plot_mollweide, \
 #                      projection_grid, healpix_mean_map
+from utils import batch_apply_tf
 
 from astropy_healpix import HEALPix
 from astropy.coordinates import SkyCoord
@@ -261,21 +262,23 @@ class FluxModel(snt.Module):
 
         return flux_model
 
+
 def chi_band(stellar_model, 
-                            type_est_batch, xi_est_batch, 
-                            ext_est_batch, plx_est_batch,
-                            flux_batch, flux_err_batch,
+             type_est_batch, xi_est_batch, 
+             ext_est_batch, plx_est_batch,
+             flux_batch, flux_err_batch,
             ):
-            '''
-            record the chi of given band
-            '''
-            flux_pred = stellar_model.predict_obs_flux(
-                type_est_batch, xi_est_batch, ext_est_batch, plx_est_batch
-            )
-            # chi^2
-            dflux = flux_pred - flux_batch
-            chi_flux = (dflux/flux_err_batch)**2
-            return chi_flux[:, 64:].numpy()
+    '''
+    Record the chi of given band.
+    '''
+    flux_pred = stellar_model.predict_obs_flux(
+        type_est_batch, xi_est_batch, ext_est_batch, plx_est_batch
+    )
+    # chi^2
+    dflux = flux_pred - flux_batch
+    chi_flux = (dflux/flux_err_batch)**2
+    return chi_flux[:, 64:].numpy()
+
 
 def grads_stellar_model(stellar_model,
                         stellar_type, xi,
@@ -932,7 +935,15 @@ def plot_gmm_prior(stellar_type_prior, base_path='.'):
     param_grid.shape = (-1,3)
     param_grid = tf.constant(param_grid.astype('f4'))
 
-    lnp = stellar_type_prior.ln_prob(param_grid).numpy()
+    lnp = batch_apply_tf(
+        stellar_type_prior.ln_prob,
+        1024,
+        param_grid,
+        function=True,
+        progress=True,
+        numpy=True
+    )
+
     lnp.shape = s
 
     for suffix,norm in [('linear',Normalize),('log',LogNorm)]:
