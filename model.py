@@ -985,12 +985,14 @@ def grid_search_stellar_params(flux_model, data,
         teff_range = np.arange(3., 9.01, 2.0, dtype='f4')
         feh_range = np.arange(-1.5, 0.501, 1.0, dtype='f4')
         logg_range = np.arange(-1.0, 5.01, 0.5, dtype='f4')
-        teff_grid,feh_grid,logg_grid = np.meshgrid(
-            teff_range, feh_range, logg_range
+        xi_range = np.arange(-0.5, 0.5, 0.5, dtype='f4')
+        teff_grid,feh_grid,logg_grid, xi_grid = np.meshgrid(
+            teff_range, feh_range, logg_range, xi_range
         )
         teff_grid.shape = (-1,)
         feh_grid.shape = (-1,)
         logg_grid.shape = (-1,)
+        xi_grid.shape = (-1,)
         type_grid = np.stack([teff_grid,feh_grid,logg_grid], axis=1)
 
     # Cartesian product with extinction grid
@@ -998,12 +1000,16 @@ def grid_search_stellar_params(flux_model, data,
     idx_ext, idx_type = np.indices((ext_range.size, type_grid.shape[0]))
     ext_grid = ext_range[idx_ext]
     type_grid = type_grid[idx_type]
+    xi_grid = xi_grid[idx_type]
 
     type_grid.shape = (-1,3)
     ext_grid.shape = (-1,)
+    xi_grid.shape = (-1,)
     plx_grid = np.ones_like(ext_grid)
-    xi_grid = np.zeros(ext_grid.shape, dtype='float32')
-
+    
+    if gmm_prior is not None:
+        xi_grid = np.zeros(plx_grid.shape, dtype='f4')
+    
     # Calculate model flux over parameter grid, assuming plx = 1 mas
     flux_grid = flux_model.predict_obs_flux(type_grid, xi_grid, ext_grid,plx_grid)
     flux_grid_exp = tf.expand_dims(flux_grid, 1) # Shape = (param, 1, wavelength)
@@ -1140,11 +1146,12 @@ def grid_search_stellar_params(flux_model, data,
 
     type_best = type_grid[param_idx_best]
     ext_best = ext_grid[param_idx_best]
-
+    xi_best = xi_grid[param_idx_best]
+    
     data['stellar_type_est'] = type_best
+    data['xi_est'] = xi_best
     data['stellar_ext_est'] = ext_best
     data['plx_est'] = plx_best #data['plx'].copy()
-
 
 def optimize_stellar_params(flux_model, data,
                             n_steps=64*1024,
@@ -1160,8 +1167,6 @@ def optimize_stellar_params(flux_model, data,
         n_type = 3
     n_wl = data['flux'].shape[1]
 
-    data['xi_est'] = np.zeros(data['plx_est'].shape, dtype='float32')
-    
     # Initial values of ln(extinction) and ln(parallax)
     ln_stellar_ext_all = np.log(np.clip(data['stellar_ext_est'], 1e-9, np.inf))
     ln_stellar_plx_all = np.log(np.clip(data['plx_est'], 1e-9, np.inf))
