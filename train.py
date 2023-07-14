@@ -1,4 +1,8 @@
 import numpy as np
+
+import matplotlib.pyplot as plt
+from matplotlib.ticker import MultipleLocator, AutoMinorLocator
+
 from argparse import ArgumentParser
 from pathlib import Path
 import h5py
@@ -6,10 +10,13 @@ import os
 import os.path
 
 from xp_utils import XPSampler, sqrt_icov_eigen, calc_invs_eigen
-from model import GaussianMixtureModel, FluxModel, chi_band, gaussian_prior, grads_stellar_model,\
-        grads_stellar_params, get_batch_iterator,  identify_outlier_stars, identify_flux_outliers,\
-        train_stellar_model, plot_gmm_prior,assign_variable_padded, corr_matrix,\
-        calc_stellar_fisher_hessian, load_data, save_as_h5, load_h5
+from utils import batch_apply_tf
+from model import GaussianMixtureModel, FluxModel, chi_band, gaussian_prior, \
+                  grads_stellar_model, grads_stellar_params, \
+                  get_batch_iterator,  identify_outlier_stars, \
+                  identify_flux_outliers, train_stellar_model, \
+                  plot_gmm_prior,assign_variable_padded, corr_matrix, \
+                  calc_stellar_fisher_hessian, load_data, save_as_h5, load_h5
 
 
 def load_training_data(fname, validation_frac=0.2, seed=1):
@@ -58,23 +65,59 @@ def prepare_training_data():
     
 
 def down_sample_weighing(x_ini, all_x, bin_edges, n_bins=100):
-        # Use high-Extinction stars for empirical distribution of xi
-        bin_edges = np.hstack([[-np.inf], bin_edges, [np.inf]])
-        
-        # Calculate the emperical distribution of x_ini under the given bins
-        bin_indices = np.digitize(x_ini, bin_edges)
-        counts = np.bincount(bin_indices, minlength=n_bins+3)
-        weights = counts / counts.sum()  # convert counts to probabilities
-        weights_per_bin = 1./(weights+0.001)
-        
-        # Weigh all stars by the inverse of density of the ini sample
-        bin_indices_all = np.digitize(all_x, bin_edges)
-        weights_per_star = weights_per_bin[bin_indices_all]
-        
-        # Normalize the weights per star  by median value
-        weights_per_star /= np.median(weights_per_star)
-        
-        return weights_per_star.astype('f4')
+    # Use high-Extinction stars for empirical distribution of xi
+    bin_edges = np.hstack([[-np.inf], bin_edges, [np.inf]])
+    
+    # Calculate the emperical distribution of x_ini under the given bins
+    bin_indices = np.digitize(x_ini, bin_edges)
+    counts = np.bincount(bin_indices, minlength=n_bins+3)
+    weights = counts / counts.sum()  # convert counts to probabilities
+    weights_per_bin = 1./(weights+0.001)
+    
+    # Weigh all stars by the inverse of density of the ini sample
+    bin_indices_all = np.digitize(all_x, bin_edges)
+    weights_per_star = weights_per_bin[bin_indices_all]
+    
+    # Normalize the weights per star  by median value
+    weights_per_star /= np.median(weights_per_star)
+    
+    return weights_per_star.astype('f4')
+
+
+def plot_param_histograms_1d(stellar_type, weights, title, fname):
+    n_params = stellar_type.shape[1]
+    figsize = (3*n_params,3)
+
+    fig,ax_arr = plt.subplots(
+        1, n_params,
+        figsize=figsize,
+        layout='constrained'
+    )
+
+    for i,(ax,p) in enumerate(zip(ax_arr.flat,stellar_type.T)):
+        p_range = (np.min(p), np.max(p))
+
+        kw = dict(
+            range=p_range, bins=100,
+            log=True, density=True,
+            histtype='step',
+            alpha=0.8
+        )
+        ax.hist(p, label=r'$\mathrm{raw}$', **kw)
+        ax.hist(p, label=r'$\mathrm{weighted}$', weights=weights, **kw)
+
+        ax.xaxis.set_minor_locator(AutoMinorLocator())
+        ax.grid(True, which='major', alpha=0.2)
+        ax.grid(True, which='minor', alpha=0.05)
+
+        ax.set_xlabel(rf'$\mathrm{{parameter\ {i}}}$')
+        if i == 0:
+            ax.legend()
+
+    fig.suptitle(title)
+
+    fig.savefig(fname)
+    plt.close(fig)
 
 
 def train(data_fname, output_dir, stage=0):
@@ -130,31 +173,35 @@ def train(data_fname, output_dir, stage=0):
         save_as_h5(d_train, full_fn('data/d_train.h5'))
                 
         all_ln_prior = []
-        teff_ini, feh_ini, logg_ini= d_train['stellar_type'].T
-        for i0 in tqdm(range(0,len(teff_ini),1024)):
-            ln_prior = stellar_type_prior.ln_prob(
-                np.vstack([
-                    teff_ini[i0:i0+1024],
-                    feh_ini[i0:i0+1024],
-                    logg_ini[i0:i0+1024]
-                ]).astype('f4').T
-            ).numpy()
-            all_ln_prior.append(ln_prior)
-        all_ln_prior = np.hstack(all_ln_prior)
+        all_ln_prior = batch_apply_tf(
+            stellar_type_prior.ln_prob,
+            1024,
+            d_train['stellar_type'],
+            function=True,
+            progress=True,
+            numpy=True
+        )
         all_prior = np.exp(all_ln_prior)
-        all_prior /= np.max(all_ln_prior)
+        all_prior /= np.max(all_prior)
         
         # Do not strengthen stars with extreme metalicity
-        all_prior[feh_ini<-2.] = 1.
-        all_prior[feh_ini>1.] = 1.       
-        
-        teff_ini, feh_ini, logg_ini = 0,0,0
+        #teff_ini, feh_ini, logg_ini = d_train['stellar_type'].T
+        #all_prior[feh_ini<-2.] = 1.
+        #all_prior[feh_ini>1.] = 1.       
         
         # Weigh stars for better representation
         #weights_per_star = np.exp(-d_train['stellar_type'][:,1]/2.)
-        weights_per_star = (1./(all_prior+0.2)).astype('f4') 
+        max_upsampling = 100.
+        weights_per_star = (1./(all_prior+1/max_upsampling)).astype('f4') 
         #weights_per_star = np.ones(d_train['plx'].shape, dtype='f4')
 
+        print('Plotting stellar-type histograms ...')
+        plot_param_histograms_1d(
+            d_train['stellar_type'],
+            weights_per_star,
+            r'$\mathrm{Training\ distribution:\ stellar\ type}$',
+            os.path.join(output_dir, 'plots/training_stellar_type_hist1d')
+        )
         
         # Initialize the parameter estimates at their measured (input) values
         for key in ('stellar_type', 'xi', 'stellar_ext', 'plx'):
