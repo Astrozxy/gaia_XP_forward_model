@@ -8,8 +8,6 @@ import matplotlib.cm as cm
 import matplotlib.ticker as ticker
 from matplotlib.colors import Normalize, LogNorm
 from matplotlib.gridspec import GridSpec
-plt.rcParams['savefig.dpi'] = 200
-plt.rcParams['savefig.format'] = 'png'
 
 import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3' 
