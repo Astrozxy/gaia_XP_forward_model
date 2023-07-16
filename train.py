@@ -212,8 +212,9 @@ def train(data_fname, output_dir, stage=0):
             sample_wavelengths, n_input=n_stellar_params,
             input_zp=np.median(d_train['stellar_type'],axis=0),
             input_scale=0.5*(p_high-p_low),
-            hidden_size=32,
-            l2=10, l2_ext_curve=1.
+            #hidden_size=32,
+            hidden_size=64,
+            l2=0.01, l2_ext_curve=1.
          )   
         
         # First, train the model with stars with good measurements,
@@ -347,7 +348,8 @@ def train(data_fname, output_dir, stage=0):
         #    d_train[key] = d_train[key][all_ln_prior>-7.43]            
         
         # Initial weight of stars: equal
-        weights_per_star = np.ones(len(d_train["plx"]), dtype='f4')
+        weights_per_star = (1./(all_prior+1/max_upsampling)).astype('f4')
+        #np.ones(len(d_train["plx"]), dtype='f4')
         
         idx_hq= np.load(full_fn('index/idx_good_wo_Rv.npy'))
 
@@ -395,6 +397,7 @@ def train(data_fname, output_dir, stage=0):
         )
         
         weights_per_star /= (0.001+np.median(weights_per_star))
+        weights_per_star *= (1./(all_prior+1/max_upsampling)).astype('f4')
         
         ret = train_stellar_model(
             stellar_model,
@@ -451,7 +454,8 @@ def train(data_fname, output_dir, stage=0):
             bin_edges = np.linspace(-1, 1, n_bins + 1)
         )
         
-        weights_per_star /= (0.001+np.median(weights_per_star))    
+        weights_per_star /= (0.001+np.median(weights_per_star))
+        weights_per_star *= (1./(all_prior+1/max_upsampling)).astype('f4')
         
         ret = train_stellar_model(
             stellar_model,
@@ -488,7 +492,6 @@ def train(data_fname, output_dir, stage=0):
         
         n_epochs = 128
         
-        weights_per_star = np.ones(len(d_train['plx']),dtype='f4')
         ret = train_stellar_model(
             stellar_model,
             d_train, d_val,
@@ -538,6 +541,7 @@ def train(data_fname, output_dir, stage=0):
             bin_edges = np.linspace(-1, 1, n_bins + 1)
         )
         weights_per_star /= (0.001+np.median(weights_per_star))    
+        weights_per_star *= (1./(all_prior+1/max_upsampling)).astype('f4')
 
         ret = train_stellar_model(
             stellar_model,
