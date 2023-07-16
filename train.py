@@ -22,7 +22,7 @@ from model import GaussianMixtureModel, FluxModel, chi_band, gaussian_prior, \
 def load_training_data(fname, validation_frac=0.2, seed=1, thin=1):
     # Load training data
     with h5py.File(fname, 'r') as f:
-        d = {key:f[key][::thin] for key in f.keys()}
+        d = {key:f[key][:][::thin] for key in f.keys()}
         sample_wavelengths = f['flux'].attrs['sample_wavelengths'][:]
 
     # Ensure that certain fields are in float32 format
@@ -35,6 +35,23 @@ def load_training_data(fname, validation_frac=0.2, seed=1, thin=1):
     ]
     for k in f4_keys:
         d[k] = d[k].astype('f4')
+
+    # Warn about NaNs
+    check_nan_keys = [
+        'flux', 'flux_err', 'flux_sqrticov',
+        'flux_cov_eival_max', 'flux_cov_eival_min',
+        'plx', 'plx_err',
+        'stellar_type', 'stellar_type_err'
+    ]
+    for k in check_nan_keys:
+        if np.any(np.isnan(d[k])):
+            raise ValueError(f'NaNs detected in {k}!')
+
+    # Replace NaN extinctions with 0 +- infinity
+    idx = np.isnan(d['stellar_ext']) | np.isnan(d['stellar_ext_err'])
+    print(f'Replacing {np.count_nonzero(idx)} NaN extinctions with 0+-inf.')
+    d['stellar_ext'][idx] = 0.
+    d['stellar_ext_err'][idx] = np.inf
 
     # Shuffle data, and put last X% into validation set
     rng = np.random.default_rng(seed=seed)
