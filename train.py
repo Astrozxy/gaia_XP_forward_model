@@ -20,11 +20,39 @@ from model import GaussianMixtureModel, FluxModel, chi_band, gaussian_prior, \
                   calc_stellar_fisher_hessian, load_data, save_as_h5, load_h5
 
 
-def load_training_data(fname, validation_frac=0.2, seed=1):
+def load_training_data(fname, validation_frac=0.2, seed=1, thin=1):
     # Load training data
     with h5py.File(fname, 'r') as f:
-        d = {key:f[key][:] for key in f.keys()}
+        d = {key:f[key][:][::thin] for key in f.keys()}
         sample_wavelengths = f['flux'].attrs['sample_wavelengths'][:]
+
+    # Ensure that certain fields are in float32 format
+    f4_keys = [
+        'flux', 'flux_err', 'flux_sqrticov',
+        'flux_cov_eival_max', 'flux_cov_eival_min',
+        'plx', 'plx_err',
+        'stellar_ext', 'stellar_ext_err',
+        'stellar_type', 'stellar_type_err'
+    ]
+    for k in f4_keys:
+        d[k] = d[k].astype('f4')
+
+    # Warn about NaNs
+    check_nan_keys = [
+        'flux', 'flux_err', 'flux_sqrticov',
+        'flux_cov_eival_max', 'flux_cov_eival_min',
+        'plx', 'plx_err',
+        'stellar_type', 'stellar_type_err'
+    ]
+    for k in check_nan_keys:
+        if np.any(np.isnan(d[k])):
+            raise ValueError(f'NaNs detected in {k}!')
+
+    # Replace NaN extinctions with 0 +- infinity
+    idx = np.isnan(d['stellar_ext']) | np.isnan(d['stellar_ext_err'])
+    print(f'Replacing {np.count_nonzero(idx)} NaN extinctions with 0+-inf.')
+    d['stellar_ext'][idx] = 0.
+    d['stellar_ext_err'][idx] = np.inf
 
     # Shuffle data, and put last X% into validation set
     rng = np.random.default_rng(seed=seed)
@@ -110,7 +138,7 @@ def plot_param_histograms_1d(stellar_type, weights, title, fname):
     plt.close(fig)
 
 
-def train(data_fname, output_dir, stage=0):
+def train(data_fname, output_dir, stage=0, thin=1):
     '''
     Stage 0: Train the stellar model, using universal extinction curve.
     Stage 1: Train the extinction model with hqlE stars, using initial guess of 
@@ -143,7 +171,10 @@ def train(data_fname, output_dir, stage=0):
         
         # Stage 0, begin without initial stellar model
         print(f'Loading training data from {data_fname} ...')
-        d_train, d_val, sample_wavelengths = load_training_data(data_fname)
+        d_train, d_val, sample_wavelengths = load_training_data(
+            data_fname,
+            thin=thin
+        )
         n_train, n_val = [len(d['plx']) for d in (d_train,d_val)]
         print(f'Loaded {n_train} ({n_val}) training (validation) sources.')
         
@@ -193,19 +224,21 @@ def train(data_fname, output_dir, stage=0):
         
         print('Creating flux model ...')
         n_stellar_params = d_train['stellar_type'].shape[1]
-        p_low,p_high = np.percentile(d_train['stellar_type'], [16.,84.], axis=0)
+        p_low,p_high = np.percentile(
+            d_train['stellar_type'],
+            [16.,84.],
+            axis=0
+        )
         
         print('Training flux model on high-quality data ...')
         # Select a subset of "high-quality" stars with good measurements
         idx_hq = np.where(
             (d_train['plx']/d_train['plx_err'] > 10.)
-          & (d_train['stellar_type_err'][:,0] < 0.2) # 0.2 kiloKelvin = 200 K
-          & (d_train['stellar_type_err'][:,1] < 0.2) # 0.2 dex in logg
-          & (d_train['stellar_type_err'][:,2] < 0.2) # 0.2 dex in [Fe/H]
+          & np.all(d_train['stellar_type_err']<0.2, axis=1) # Type uncertainty
           & (d_train['stellar_ext_err'] < 0.1)
         )[0]
-        pct_hq = len(idx_hq) / d_train['plx'].shape[0] * 100
         n_hq = len(idx_hq)
+        pct_hq = n_hq / d_train['plx'].shape[0] * 100
         print(f'Training on {n_hq} ({pct_hq:.3g}%) high-quality stars ...')
         
         stellar_model = FluxModel(
@@ -213,11 +246,25 @@ def train(data_fname, output_dir, stage=0):
             input_zp=np.median(d_train['stellar_type'],axis=0),
             input_scale=0.5*(p_high-p_low),
             hidden_size=32,
-            l2=10, l2_ext_curve=1.
-         )   
+            l2=1., l2_ext_curve=1.
+        )
         
         # First, train the model with stars with good measurements,
         # with fixed slope of ext_curve
+        title = (
+            r'$\mathrm{Training\ distribution'
+            r'\ (step\ 0a:\ HQ):'
+            r'\ stellar\ type}$'
+        )
+        fn = os.path.join(
+            output_dir,
+            'plots/training_stellar_type_hist1d_step0a'
+        )
+        plot_param_histograms_1d(
+            d_train['stellar_type'][idx_hq],
+            weights_per_star[idx_hq],
+            title, fn
+        )
         ret = train_stellar_model(
             stellar_model,
             d_train, d_val,
@@ -613,12 +660,18 @@ def main():
         default=0,
         help='Stage at which to begin training.'
     )
+    parser.add_argument(
+        '--thin',
+        type=int,
+        default=1,
+        help='Only use every Nth star in the training set.'
+    )
     args = parser.parse_args()
 
-    train(args.input, args.output_dir, stage=args.stage)    
+    train(args.input, args.output_dir, stage=args.stage, thin=args.thin)
 
     return 0
-        
+
 
 if __name__=='__main__':
     main()
