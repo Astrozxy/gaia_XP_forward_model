@@ -16,7 +16,7 @@ from model import GaussianMixtureModel, FluxModel, chi_band, gaussian_prior, \
                   grads_stellar_model, grads_stellar_params, \
                   get_batch_iterator,  identify_outlier_stars, \
                   identify_flux_outliers, train_stellar_model, \
-                  plot_gmm_prior,assign_variable_padded, corr_matrix, \
+                  plot_gmm_prior, assign_variable_padded, corr_matrix, \
                   calc_stellar_fisher_hessian, load_data, save_as_h5, load_h5
 
 
@@ -178,6 +178,13 @@ def train(data_fname, output_dir, stage=0, thin=1):
         n_train, n_val = [len(d['plx']) for d in (d_train,d_val)]
         print(f'Loaded {n_train} ({n_val}) training (validation) sources.')
         
+        # Initial guess of xi
+        d_train['xi'] = np.zeros(n_train, dtype='f4')
+        d_val['xi'] = np.zeros(n_val, dtype='f4')
+
+        save_as_h5(d_val, full_fn('data/d_val.h5'))
+        save_as_h5(d_train, full_fn('data/d_train.h5'))
+        
         # Generate GMM prior
         print('Generating Gaussian Mixture Model prior on stellar type ...')
         stellar_type_prior = GaussianMixtureModel(3, n_components=16)
@@ -185,13 +192,6 @@ def train(data_fname, output_dir, stage=0, thin=1):
         stellar_type_prior.save(full_fn('models/prior/gmm_prior'))
         print('  -> Plotting prior ...')
         plot_gmm_prior(stellar_type_prior, base_path=output_dir)
-
-        # Initial guess of xi
-        d_train['xi'] = np.zeros(n_train, dtype='f4')
-        d_val['xi'] = np.zeros(n_val, dtype='f4')
-
-        save_as_h5(d_val, full_fn('data/d_val.h5'))
-        save_as_h5(d_train, full_fn('data/d_train.h5'))
                 
         all_ln_prior = batch_apply_tf(
             stellar_type_prior.ln_prob,
@@ -207,7 +207,7 @@ def train(data_fname, output_dir, stage=0, thin=1):
         # Weigh stars for better representation
         #weights_per_star = np.exp(-d_train['stellar_type'][:,1]/2.)
         max_upsampling = 100.
-        weights_per_star = (1./(all_prior+1/max_upsampling)).astype('f4') 
+        weights_per_star = (1./(all_prior+1/max_upsampling)).astype('f4')
 
         print('Plotting stellar-type histograms ...')
         plot_param_histograms_1d(
@@ -216,6 +216,11 @@ def train(data_fname, output_dir, stage=0, thin=1):
             r'$\mathrm{Training\ distribution:\ stellar\ type}$',
             os.path.join(output_dir, 'plots/training_stellar_type_hist1d')
         )
+        
+        # Generate tracks through stellar parameter space
+        print('Generating tracks through stellar parameter space ...')
+        atm_tracks = model.calculate_stellar_type_tracks(stellar_type_prior)
+        model.save_stellar_type_tracks(full_fn('models/prior/tracks.h5'))
         
         # Initialize the parameter estimates at their measured (input) values
         for key in ('stellar_type', 'xi', 'stellar_ext', 'plx'):
@@ -256,14 +261,11 @@ def train(data_fname, output_dir, stage=0, thin=1):
             r'\ (step\ 0a:\ HQ):'
             r'\ stellar\ type}$'
         )
-        fn = os.path.join(
-            output_dir,
-            'plots/training_stellar_type_hist1d_step0a'
-        )
         plot_param_histograms_1d(
             d_train['stellar_type'][idx_hq],
             weights_per_star[idx_hq],
-            title, fn
+            title,
+            full_fn('plots/training_stellar_type_hist1d_step0a')
         )
         ret = train_stellar_model(
             stellar_model,
@@ -278,6 +280,13 @@ def train(data_fname, output_dir, stage=0, thin=1):
         )
         loss_hist.append(ret)
         stellar_model.save(full_fn('models/flux/xp_spectrum_model_initial'))
+        
+        # Plot stellar model along tracks through parameter space
+        print('Plotting stellar model ...')
+        for i,track in enumerate(atm_tracks):
+            fig,ax = model.plot_stellar_model(stellar_model, track)
+            fig.savefig(full_fn(f'plots/stellar_model_step0a_track{i}'))
+            plt.close(fig)
 
         # Next, simultaneously train the stellar model and update stellar
         # parameters, using only the HQ data
@@ -317,6 +326,13 @@ def train(data_fname, output_dir, stage=0, thin=1):
             var_update = ['atm','E','plx'],
         )
         loss_hist.append(ret)
+        
+        # Generate tracks through stellar parameter space and plot stellar model
+        print('Plotting stellar model ...')
+        for i,track in enumerate(atm_tracks):
+            fig,ax = model.plot_stellar_model(stellar_model, track)
+            fig.savefig(full_fn(f'plots/stellar_model_step0b_track{i}'))
+            plt.close(fig)
 
         # Self-cleaning: Identify outlier stars to exclude from further training,
         # using distance from priors
@@ -337,6 +353,18 @@ def train(data_fname, output_dir, stage=0, thin=1):
         pct_good = 100*np.mean(idx_good)
         print(f'Combined outliers: {100-pct_good:.3f}% of sources.')
         
+        title = (
+            r'$\mathrm{Training\ distribution'
+            r'\ (step\ 0c:\ cut\ flux/param\ outliers):'
+            r'\ stellar\ type}$'
+        )
+        plot_param_histograms_1d(
+            d_train['stellar_type'][idx_good],
+            weights_per_star[idx_good],
+            title,
+            full_fn('plots/training_stellar_type_hist1d_step0c')
+        )
+        
         # Finally, simultaneously train the stellar model and update stellar
         # parameters, using all the (non-outlier) data
         print('Training flux model and optimizing all non-outlier stars ...')
@@ -355,6 +383,13 @@ def train(data_fname, output_dir, stage=0, thin=1):
             var_update = ['atm','E','plx'],
         )
         loss_hist.append(ret)
+        
+        # Generate tracks through stellar parameter space and plot stellar model
+        print('Plotting stellar model ...')
+        for i,track in enumerate(atm_tracks):
+            fig,ax = model.plot_stellar_model(stellar_model, track)
+            fig.savefig(full_fn(f'plots/stellar_model_step0c_track{i}'))
+            plt.close(fig)
         
         np.save(full_fn('index/idx_good_wo_Rv.npy'), idx_good)
         stellar_model.save(full_fn('models/flux/xp_spectrum_model_final'))
