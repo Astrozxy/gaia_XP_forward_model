@@ -7,8 +7,7 @@ import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 import matplotlib.ticker as ticker
 from matplotlib.colors import Normalize, LogNorm
-plt.rcParams['savefig.dpi'] = 200
-plt.rcParams['savefig.format'] = 'png'
+from matplotlib.gridspec import GridSpec
 
 import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3' 
@@ -821,8 +820,12 @@ class GaussianMixtureModel(snt.Module):
         return gauss_mix_model
 
     def fit(self, x):
-        from sklearn.mixture import GaussianMixture
-        gmm = GaussianMixture(n_components=self._n_components)
+        from sklearn.mixture import BayesianGaussianMixture
+        gmm = BayesianGaussianMixture(
+            n_components=self._n_components,
+            weight_concentration_prior=1./self._n_components,
+            reg_covar=1e-6
+        )
         gmm.fit(x)
 
         ln_cov_det = [np.linalg.slogdet(c)[1] for c in gmm.covariances_]
@@ -896,12 +899,14 @@ def plot_gmm_prior(stellar_type_prior, base_path='.'):
 
     n_comp = stellar_type_prior._n_components
     params = stellar_type_prior.sample(1024**2*10)
+    n_params = params.shape[1]
 
-    labels = [
-        r'$T_{\mathrm{eff}}$',
-        r'$\left[\mathrm{Fe/H}\right]$',
-        r'$\log g$',
-    ]
+    #labels = [
+    #    r'$T_{\mathrm{eff}}$',
+    #    r'$\left[\mathrm{Fe/H}\right]$',
+    #    r'$\log g$',
+    #]
+    labels = [rf'$\mathrm{{param\ {i}}}$' for i in range(n_params)]
 
     ranges = [
         plot_utils.choose_lim(p, pct=[0.1,99.9], expand=0.4)
@@ -928,11 +933,11 @@ def plot_gmm_prior(stellar_type_prior, base_path='.'):
     plt.close(fig)
 
     # Plot 2D marginal distributions of prior
-    param_ranges = [np.linspace(r0,r1,50+k) for k,(r0,r1) in enumerate(ranges)]
+    param_ranges = [np.linspace(r0,r1,100) for r0,r1 in ranges]
     param_grid = np.meshgrid(*param_ranges, indexing='ij')
-    param_grid = np.stack(param_grid, axis=3)
-    s = param_grid.shape[:3]
-    param_grid.shape = (-1,3)
+    param_grid = np.stack(param_grid, axis=-1)
+    s = param_grid.shape[:-1]
+    param_grid.shape = (-1,n_params)
     param_grid = tf.constant(param_grid.astype('f4'))
 
     lnp = batch_apply_tf(
@@ -946,37 +951,71 @@ def plot_gmm_prior(stellar_type_prior, base_path='.'):
 
     lnp.shape = s
 
-    for suffix,norm in [('linear',Normalize),('log',LogNorm)]:
-        fig,ax_arr = plt.subplots(1,3, figsize=(6,2), layout='constrained')
+    for suffix in ('linear', 'log'):
+        fig = plt.figure(figsize=(2*(n_params-1),)*2, layout='constrained')
+        gs = GridSpec(n_params-1, n_params-1, figure=fig)
 
-        for k,ax in enumerate(ax_arr.flat):
-            labels_k = [l for i,l in enumerate(labels) if i != k]
-            ranges_k = [r for i,r in enumerate(ranges) if i != k]
+        for i in range(0,n_params-1):
+            for j in range(i,n_params-1):
+                dims = i, j+1
+                ax = fig.add_subplot(gs[j,i])
 
-            lnp_marginal = logsumexp(lnp, axis=k)
-            lnp_marginal -= np.max(lnp_marginal)
+                # Marginalize over all but the selected dimensions
+                sum_dims = [k for k in range(n_params) if k not in dims]
+                lnp_marginal = lnp
+                for k in sum_dims:
+                    lnp_marginal = logsumexp(
+                        lnp_marginal,
+                        axis=k,
+                        keepdims=True
+                    )
+                lnp_marginal = np.squeeze(lnp_marginal, axis=tuple(sum_dims))
+                lnp_marginal -= np.max(lnp_marginal)
+                p_marginal = np.exp(lnp_marginal)
 
-            ax.imshow(
-                np.exp(lnp_marginal.T),
-                origin='lower',
-                extent=ranges_k[0]+ranges_k[1],
-                interpolation='nearest',
-                aspect='auto',
-                norm=norm()
-            )
+                if suffix == 'linear':
+                    img = p_marginal
+                else:
+                    img = lnp_marginal
 
-            ax.set_xlabel(labels_k[0])
-            ax.set_ylabel(labels_k[1])
-            ax.set_xlim(ranges_k[0])
-            ax.set_ylim(ranges_k[1])
+                im = ax.imshow(
+                    img.T,
+                    origin='lower',
+                    extent=ranges[dims[0]]+ranges[dims[1]],
+                    interpolation='nearest',
+                    aspect='auto'
+                )
 
-        #fig.subplots_adjust(
-        #    left=0.06,
-        #    right=0.98,
-        #    bottom=0.17,
-        #    top=0.95,
-        #    wspace=0.32
-        #)
+                p_ordered = np.sort(p_marginal.flat)
+                P_cumulative = np.cumsum(p_ordered)
+                P_cumulative /= P_cumulative[-1]
+                pct_levels = [0.001, 0.01]
+                idx_p = np.searchsorted(P_cumulative, pct_levels) + 1
+                p_levels = p_ordered[idx_p]
+                cs = ax.contour(
+                    param_ranges[dims[0]],
+                    param_ranges[dims[1]],
+                    p_marginal.T,
+                    levels=p_levels,
+                    colors='w',
+                    alpha=0.4,
+                    linewidths=0.75
+                )
+                p_fmt = {p:f'{l:.1%}' for p,l in zip(cs.levels,pct_levels)}
+                ax.clabel(cs, cs.levels, fmt=p_fmt, inline=True, fontsize=7)
+
+                if dims[1] == n_params-1:
+                    ax.set_xlabel(labels[dims[0]])
+                else:
+                    ax.set_xticklabels([])
+
+                if dims[0] == 0:
+                    ax.set_ylabel(labels[dims[1]])
+                else:
+                    ax.set_yticklabels([])
+
+                ax.set_xlim(ranges[dims[0]])
+                ax.set_ylim(ranges[dims[1]])
 
         fn = os.path.join(
             base_path, 'plots',
