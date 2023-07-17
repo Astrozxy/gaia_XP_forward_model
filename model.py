@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 import matplotlib.ticker as ticker
 from matplotlib.colors import Normalize, LogNorm
+from matplotlib.cm import ScalarMappable
 from matplotlib.gridspec import GridSpec
 
 import os
@@ -21,11 +22,14 @@ for gpu in gpus:
 
 from scipy.stats import binned_statistic_2d
 from scipy.special import logsumexp
+from scipy.interpolate import UnivariateSpline
 import scipy.ndimage
 import scipy.signal
 
 from astropy.table import Table
 import astropy.io.fits as fits
+import astropy.units as units
+import astropy.constants as const
 
 import h5py
 import os
@@ -1023,6 +1027,220 @@ def plot_gmm_prior(stellar_type_prior, base_path='.'):
         )
         fig.savefig(fn)
         plt.close(fig)
+
+        
+def calculate_stellar_type_tracks(stellar_type_prior):
+    # Draw samples from the prior, to determine parameter ranges
+    # and point of maximum prior density
+    prior_samples = stellar_type_prior.sample(1024*32)
+    d = prior_samples.shape[1] # Dimensionality of stellar-type space
+    param_lims = [
+        plot_utils.choose_lim(prior_samples[:,i], pct=[0.1,99.9])
+        for i in range(d)
+    ]
+    
+    prior_values = stellar_type_prior.ln_prob(prior_samples)
+    idx_maxprior = np.argmax(prior_values)
+    param_maxprior = prior_samples[idx_maxprior]
+    
+    lnp_low = np.percentile(prior_values, 1.)
+    
+    # Function to maximize the prior, holding one variable fixed
+    def conditional_optimize_type(type_init, hold_dim, n_steps=128, reg=0.):
+        p0 = tf.Variable(np.reshape(type_init,(1,-1)), dtype=tf.float32)
+
+        param_list = [tf.Variable(p) for p in tf.unstack(p0, axis=1)]
+        watch_params = [p for i,p in enumerate(param_list) if i!=hold_dim]
+
+        opt = tf.keras.optimizers.experimental.SGD(
+            learning_rate=3e-3,
+            momentum=0.5
+        )
+
+        for i in range(n_steps):
+            with tf.GradientTape(watch_accessed_variables=False) as g:
+                g.watch(watch_params)
+                p = tf.stack(param_list, axis=1)
+                loss = -stellar_type_prior.ln_prob(p)
+                loss = loss + reg*tf.reduce_sum((p-p0)**2, axis=1)
+                loss = tf.reduce_sum(loss)
+            grads = g.gradient(loss, watch_params)
+            opt.apply_gradients(zip(grads, watch_params))
+
+        p1 = tf.stack(param_list, axis=1)
+        return p1
+    
+    # Extend a curve from starting point outwards, changing one dimension
+    # independently, and setting the other dimensions to follow the ridge
+    # of highest prior density
+    def extend_type_curve(indep_dim, dp):
+        p = param_maxprior.copy()
+        p_list = [p.copy()]
+        
+        p_indep_range = np.arange(
+            param_maxprior[indep_dim],
+            param_lims[indep_dim][0 if dp<0 else 1],
+            dp
+        )
+
+        for p_i in p_indep_range:
+            p[indep_dim] += dp
+            p = conditional_optimize_type(p, indep_dim).numpy()[0]
+            p_list.append(p.copy())
+            
+            lnp = stellar_type_prior.ln_prob(np.reshape(p,(1,-1)))[0]
+            if lnp < lnp_low:
+                break
+
+        p_list = np.stack(p_list, axis=0)
+        return p_list
+    
+    # Extend a curve out in both directions, and then stitch them together
+    def construct_type_curve(indep_dim):
+        p_high = extend_type_curve(indep_dim, 0.2)
+        p_low = extend_type_curve(indep_dim, -0.2)
+        p_curve = np.concatenate([p_low[::-1][:-1], p_high], axis=0)
+        return p_curve
+    
+    def extend_straight(indep_dim, dp):
+        p_indep_range = np.arange(
+            param_maxprior[indep_dim],
+            param_lims[indep_dim][0 if dp<0 else 1],
+            dp
+        )
+        p = np.repeat(
+            np.reshape(param_maxprior,(1,-1)),
+            len(p_indep_range),
+            axis=0
+        )
+        p[:,indep_dim] = p_indep_range
+        lnp = stellar_type_prior.ln_prob(p).numpy()
+        i1 = np.where(lnp < lnp_low)[0]
+        if len(i1):
+            p = p[:i1[0]]
+        return p
+    
+    # Construct a simple curve, in which all but one dimension are held
+    # constant
+    def construct_straight_curve(indep_dim):
+        p_high = extend_straight(indep_dim, 0.2)
+        p_low = extend_straight(indep_dim, -0.2)
+        p_curve = np.concatenate([p_low[::-1][:-1], p_high], axis=0)
+        return p_curve
+    
+    def smoothed_curve(p, indep_dim, s=0.1):
+        curve = []
+        for i in range(d):
+            if i == indep_dim:
+                curve.append(p[:,i])
+            else:
+                spl = UnivariateSpline(p[:,indep_dim], p[:,i], s=s)
+                curve.append(spl(p[:,indep_dim]))
+        curve = np.stack(curve, axis=1)
+        return curve
+    
+    curves = [
+        {'curve':construct_type_curve(i), 'indep_dim':i, 'title':f'curve_{i}'}
+        for i in range(d)
+    ]
+    curves += [
+        {'curve':construct_straight_curve(i), 'indep_dim':i, 'title':f'ray_{i}'}
+        for i in range(d)
+    ]
+    
+    for c in curves:
+        c['curve_smooth'] = smoothed_curve(c['curve'], c['indep_dim'])
+    
+    return curves
+
+
+def save_stellar_type_tracks(tracks, fname):
+    with h5py.File(fname, 'w') as f:
+        for i,t in enumerate(tracks):
+            gp = f'track_{i}'
+            for k in ('curve', 'curve_smooth'):
+                f[f'{gp}/{k}'] = t[k]
+            for k in ('indep_dim', 'title'):
+                f[gp].attrs[k] = t[k]
+
+
+def load_stellar_type_tracks(fname):
+    tracks = []
+    with h5py.File(fname, 'r') as f:
+        n_groups = len(f.keys())
+        for i in range(n_groups):
+            gp = f'track_{i}'
+            t = {}
+            for k in ('curve', 'curve_smooth'):
+                t[k] = f[f'{gp}/{k}'][:]
+            for k in ('indep_dim', 'title'):
+                t[k] = f[gp].attrs[k]
+            tracks.append(t)
+    return tracks
+
+
+def plot_stellar_model(flux_model, track, show_lines=('hydrogen','metals')):
+    sample_wavelengths = flux_model.get_sample_wavelengths()
+
+    def Ryd_wl(n0, n1):
+        return (1 / (const.Ryd * (1/n0**2 - 1/n1**2))).to('nm').value
+
+    lines = {
+        'hydrogen': [
+            (r'$\mathrm{Balmer\ series}$', [Ryd_wl(2,n) for n in (3,4,5,6)], 'g', ':'),
+            (r'$\mathrm{Paschen\ series}$', [Ryd_wl(3,n) for n in (8,9,10)], 'b', '-.')
+        ],
+        'metals': [
+            (r'$\mathrm{Mg}$', [518.362], 'orange', '-'),
+            (r'$\mathrm{Ca}$', [422.6727, 430.774, 854.2], 'violet', '--'),
+            (r'$\mathrm{Fe}$', [431.,438.,527.], 'purple', 'solid')
+        ]
+    }
+    
+    p = track['curve_smooth']
+    c = p[:,track['indep_dim']]
+    flux = np.exp(flux_model.predict_intrinsic_ln_flux(p))
+
+    fig = plt.figure(figsize=(6,4), layout='constrained')
+    ax = fig.add_subplot(1,1,1)
+
+    norm = Normalize(np.min(c), np.max(c))
+    cmap = plt.get_cmap('coolwarm')
+    c = cmap(norm(c))
+
+    for fl,cc in zip(flux,c):
+        ax.loglog(sample_wavelengths, fl, c=cc)
+
+    cb = fig.colorbar(
+        ScalarMappable(norm=norm, cmap=cmap),
+        ax=ax,
+        label=fr'$\mathrm{{parameter\ {track["indep_dim"]}}}$'
+    )
+
+    ax.set_xlabel(r'$\lambda\ \left(\mathrm{nm}\right)$')
+
+    ax.set_ylabel(
+        r'$f_{\lambda}\ '
+        r'\left(10^{-18}\,\mathrm{W\,m^{-2}\,nm^{-1}}\right)$'
+    )
+
+    show_lines = ('hydrogen', 'metals')
+
+    for key in show_lines:
+        for line_label,line_wl,c,ls in lines[key]:
+            for i,wl in enumerate(line_wl):
+                ax.axvline(
+                    wl,
+                    color=c, ls=ls, lw=1., alpha=0.4,
+                    label=line_label if i==0 else None
+                )
+
+    legend = ax.legend(fontsize=5,loc=4)
+    frame = legend.get_frame() 
+    frame.set_alpha(1) 
+    frame.set_facecolor('white')
+    
+    return fig, ax
 
 
 def grid_search_stellar_params(flux_model, data,
