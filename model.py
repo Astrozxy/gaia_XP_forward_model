@@ -127,9 +127,9 @@ class FluxModel(snt.Module):
         self.predict_ln_ext_curve(tf.zeros([1, 1]))
         
         # Initial guess of the extinction curve
-        R0_guess = np.log(2 * (sample_wavelengths / 550.)**(-1.5))
+        R0_guess = np.log(2 * (sample_wavelengths/550.)**(-1.5))
         R0_guess = R0_guess.astype('float32')
-        R1_guess = (sample_wavelengths - 550.)/(992.-392.)
+        R1_guess = np.clip((sample_wavelengths-550.)/(992.-392.),-1,1,)
         R1_guess = R1_guess.astype('float32')
         
         self._ext_bias.assign(R0_guess.reshape(1,-1))
@@ -1428,6 +1428,7 @@ def optimize_stellar_params(flux_model, data,
                             batch_size=4096,
                             optimizer='adam',
                             use_prior=None,
+                            ln_prior_clip=-12.
                             optimize_subset=None):
     if 'stellar_type' in data:
         n_type = data['stellar_type'].shape[1]
@@ -1482,7 +1483,7 @@ def optimize_stellar_params(flux_model, data,
             gaussian_prior(ext_b, ext_obs_b, ext_sigma_b)
           - 2*ln_ext_b # Jacobian of transformation from E to ln(E)
         )
-        prior_xi = gaussian_prior(xi_b, 0, 1)*0.01
+        prior_xi = gaussian_prior(xi_b, 0, 1)
         prior = prior_plx + prior_ext + prior_xi
         # Stellar type prior: multiple options
         prior_type = 0.
@@ -1494,7 +1495,12 @@ def optimize_stellar_params(flux_model, data,
             )
         elif isinstance(use_pr, GaussianMixtureModel):
             print('Using prior: GMM')
-            prior_type = -2. * use_prior.ln_prob(st_type_b)
+            ln_prior_by_gmm = use_prior.ln_prob(st_type_b)
+            prior_type = -2. * (ln_prior_by_gmm 
+                                + ln_prior_clip 
+                                - tf.math.log(tf.math.exp(ln_prior_clip)
+                                             +tf.math.exp(ln_prior_by_gmm)
+                                )
         elif use_pr is None:
             print('Using prior: None (chi^2 only)')
             prior_type = 0.
