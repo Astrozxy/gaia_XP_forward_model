@@ -1473,7 +1473,18 @@ def grid_search_stellar_params(flux_model, data,
     data['xi_est'] = xi_best
     data['stellar_ext_est'] = ext_best
     data['plx_est'] = plx_best #data['plx'].copy()
+    
 
+def ln_prior_clipped(use_prior, st_type_b, ln_prior_clip):
+    ln_prior_by_gmm = use_prior.ln_prob(st_type_b)
+    prior_type = (ln_prior_by_gmm + ln_prior_clip 
+                - tf.math.log(tf.math.exp(ln_prior_clip)
+                             +tf.math.exp(ln_prior_by_gmm)
+                             )
+                 )
+    return prior_type
+
+    
 def optimize_stellar_params(flux_model, data,
                             n_steps=64*1024,
                             lr_init=0.01,
@@ -1481,7 +1492,7 @@ def optimize_stellar_params(flux_model, data,
                             batch_size=4096,
                             optimizer='adam',
                             use_prior=None,
-                            ln_prior_clip=-12.
+                            ln_prior_clip=-12.,
                             optimize_subset=None):
     if 'stellar_type' in data:
         n_type = data['stellar_type'].shape[1]
@@ -1548,12 +1559,10 @@ def optimize_stellar_params(flux_model, data,
             )
         elif isinstance(use_pr, GaussianMixtureModel):
             print('Using prior: GMM')
-            ln_prior_by_gmm = use_prior.ln_prob(st_type_b)
-            prior_type = -2. * (ln_prior_by_gmm 
-                                + ln_prior_clip 
-                                - tf.math.log(tf.math.exp(ln_prior_clip)
-                                             +tf.math.exp(ln_prior_by_gmm)
-                                )
+            prior_type = -2.*ln_prob_clipped(use_prior,
+                                             st_type_b,
+                                             ln_prior_clip)
+
         elif use_pr is None:
             print('Using prior: None (chi^2 only)')
             prior_type = 0.
