@@ -73,16 +73,6 @@ def load_training_data(fname, validation_frac=0.2, seed=1, thin=1):
     return d_train, d_val, sample_wavelengths
 
 
-def prepare_training_data():
-    print('Gathering training data into one file ...')
-    sample_wavelengths = np.arange(392., 993., 10.)
-    data_out_fname = 'data/training/xp_nn_training_data.h5'
-    gather_data_into_file(
-        data_out_fname,
-        sample_wavelengths
-    )
-    
-
 def down_sample_weighing(x_ini, all_x, bin_edges, n_bins=100):
     # Use high-Extinction stars for empirical distribution of xi
     bin_edges = np.hstack([[-np.inf], bin_edges, [np.inf]])
@@ -137,7 +127,26 @@ def plot_param_histograms_1d(stellar_type, weights, title, fname):
 
     fig.savefig(fname)
     plt.close(fig)
-
+    
+    
+def weigh_prior(stellar_type_prior, d_train)
+    all_ln_prior = batch_apply_tf(
+            stellar_type_prior.ln_prob,
+            1024,
+            d_train['stellar_type'],
+            function=True,
+            progress=True,
+            numpy=True
+    )
+    all_prior = np.exp(all_ln_prior)
+    all_prior /= np.max(all_prior)
+        
+    # Weigh stars for better representation
+    #weights_per_star = np.exp(-d_train['stellar_type'][:,1]/2.)
+    max_upsampling = 100.
+    weights_per_star = (1./(all_prior+1/max_upsampling)).astype('f4')
+    
+    return weights_per_star
 
 def train(data_fname, output_dir, stage=0, thin=1):
     '''
@@ -174,7 +183,8 @@ def train(data_fname, output_dir, stage=0, thin=1):
         print(f'Loading training data from {data_fname} ...')
         d_train, d_val, sample_wavelengths = load_training_data(
             data_fname,
-            thin=thin
+            thin=thin,
+            seed = 0,
         )
         n_train, n_val = [len(d['plx']) for d in (d_train,d_val)]
         print(f'Loaded {n_train} ({n_val}) training (validation) sources.')
@@ -188,28 +198,14 @@ def train(data_fname, output_dir, stage=0, thin=1):
         
         # Generate GMM prior
         print('Generating Gaussian Mixture Model prior on stellar type ...')
-        stellar_type_prior = GaussianMixtureModel(3, n_components=16)
+        stellar_type_prior = GaussianMixtureModel(3, n_components=8)
         stellar_type_prior.fit(d_train['stellar_type'])
         stellar_type_prior.save(full_fn('models/prior/gmm_prior'))
         print('  -> Plotting prior ...')
         plot_gmm_prior(stellar_type_prior, base_path=output_dir)
-                
-        all_ln_prior = batch_apply_tf(
-            stellar_type_prior.ln_prob,
-            1024,
-            d_train['stellar_type'],
-            function=True,
-            progress=True,
-            numpy=True
-        )
-        all_prior = np.exp(all_ln_prior)
-        all_prior /= np.max(all_prior)
         
-        # Weigh stars for better representation
-        #weights_per_star = np.exp(-d_train['stellar_type'][:,1]/2.)
-        max_upsampling = 100.
-        weights_per_star = (1./(all_prior+1/max_upsampling)).astype('f4')
-
+        weights_per_star = weigh_prior(stellar_type_prior, d_train)
+        
         print('Plotting stellar-type histograms ...')
         plot_param_histograms_1d(
             d_train['stellar_type'],
@@ -254,9 +250,10 @@ def train(data_fname, output_dir, stage=0, thin=1):
             sample_wavelengths, n_input=n_stellar_params,
             input_zp=np.median(d_train['stellar_type'],axis=0),
             input_scale=0.5*(p_high-p_low),
-            hidden_size=32,
-            l2=1., l2_ext_curve=1.
-        )
+            #hidden_size=32,
+            hidden_size=64,
+            l2=0.1, l2_ext_curve=1.
+         )   
         
         # First, train the model with stars with good measurements,
         # with fixed slope of ext_curve
@@ -426,25 +423,7 @@ def train(data_fname, output_dir, stage=0, thin=1):
         print('Loading Gaussian Mixture Model prior on stellar type ...')
         stellar_type_prior = GaussianMixtureModel.load(
             full_fn('models/prior/gmm_prior-1')
-        )
-        
-        #print('Calculating prior weight of stars in the training set')
-        #all_ln_prior = []
-        #teff_ini, feh_ini, logg_ini= d_train['stellar_type'].T
-        #for i in tqdm(range(int(len(teff_ini)/10000)+1)):
-        #    ln_prior = stellar_type_prior.ln_prob(
-        #        np.vstack([
-        #                teff_ini[i*10000: (i+1)*10000], 
-        #                feh_ini[i*10000: (i+1)*10000], 
-        #                logg_ini[i*10000: (i+1)*10000]]).T
-        #    ).numpy()
-        #    all_ln_prior.append(ln_prior)
-        #teff_ini, feh_ini, logg_ini = 0,0,0
-        #all_ln_prior = np.hstack(all_ln_prior)
-
-        #print('Removing outliers in stellar types')
-        #for key in tqdm(d_train.keys()):
-        #    d_train[key] = d_train[key][all_ln_prior>-7.43]            
+        )    
         
         # Initial weight of stars: equal
         weights_per_star = np.ones(len(d_train["plx"]), dtype='f4')
@@ -507,6 +486,7 @@ def train(data_fname, output_dir, stage=0, thin=1):
         )
         
         weights_per_star /= (0.001+np.median(weights_per_star))
+        weights_per_star *= (1./(all_prior+1/max_upsampling)).astype('f4')
 
         title = (
             r'$\mathrm{Training\ distribution'
@@ -576,8 +556,8 @@ def train(data_fname, output_dir, stage=0, thin=1):
             bin_edges = np.linspace(-1, 1, n_bins + 1)
         )
         
-        weights_per_star /= (0.001+np.median(weights_per_star))    
-        # TODO: Multiply in prior-based weights
+        weights_per_star /= (0.001+np.median(weights_per_star))
+        weights_per_star *= weigh_prior(stellar_type_prior, d_train)
         
         ret = train_stellar_model(
             stellar_model,
@@ -627,7 +607,6 @@ def train(data_fname, output_dir, stage=0, thin=1):
         
         n_epochs = 128
         
-        weights_per_star = np.ones(len(d_train['plx']),dtype='f4')
         ret = train_stellar_model(
             stellar_model,
             d_train, d_val,
@@ -677,7 +656,8 @@ def train(data_fname, output_dir, stage=0, thin=1):
             d_train['xi_est'], 
             bin_edges = np.linspace(-1, 1, n_bins + 1)
         )
-        weights_per_star /= (0.001+np.median(weights_per_star))    
+        weights_per_star /= (0.001+np.median(weights_per_star))
+        weights_per_star *= weigh_prior(stellar_type_prior, d_train)
 
         title = (
             r'$\mathrm{Training\ distribution'
