@@ -280,7 +280,7 @@ def train(data_fname, output_dir, stage=0, thin=1):
             optimize_stellar_params=False,
             batch_size=batch_size,
             n_epochs=n_epochs,
-            model_update=['stellar_model',  'ext_curve_b'],
+            model_update=['stellar_model','ext_curve_b'],
         )
         loss_hist.append(ret)
         stellar_model.save(full_fn('models/flux/xp_spectrum_model_initial'))
@@ -291,6 +291,10 @@ def train(data_fname, output_dir, stage=0, thin=1):
             fig,ax = model.plot_stellar_model(stellar_model, track)
             fig.savefig(full_fn(f'plots/stellar_model_step0a_track{i}'))
             plt.close(fig)
+        
+        fig,ax = plot_extinction_curve(flux_model, show_variation=False)
+        fig.savefig(full_fn('plots/extinction_curve_step0a'))
+        plt.close(fig)
 
         # Next, simultaneously train the stellar model and update stellar
         # parameters, using only the HQ data
@@ -305,7 +309,7 @@ def train(data_fname, output_dir, stage=0, thin=1):
             lr_model_init=1e-5,
             batch_size=batch_size,
             n_epochs=n_epochs,
-            model_update=['stellar_model',  'ext_curve_b'],
+            model_update=['stellar_model','ext_curve_b'],
             var_update = ['atm','E','plx'],
         )
         loss_hist.append(ret)
@@ -313,6 +317,16 @@ def train(data_fname, output_dir, stage=0, thin=1):
         stellar_model.save(
             full_fn('models/flux/xp_spectrum_model_intermediate')
         )
+        
+        print('Plotting stellar model ...')
+        for i,track in enumerate(atm_tracks):
+            fig,ax = model.plot_stellar_model(stellar_model, track)
+            fig.savefig(full_fn(f'plots/stellar_model_step0b_track{i}'))
+            plt.close(fig)
+        
+        fig,ax = plot_extinction_curve(flux_model, show_variation=False)
+        fig.savefig(full_fn('plots/extinction_curve_step0b'))
+        plt.close(fig)
 
         stellar_model = FluxModel.load(
             full_fn('models/flux/xp_spectrum_model_intermediate-1')
@@ -330,13 +344,6 @@ def train(data_fname, output_dir, stage=0, thin=1):
             var_update = ['atm','E','plx'],
         )
         loss_hist.append(ret)
-        
-        # Generate tracks through stellar parameter space and plot stellar model
-        print('Plotting stellar model ...')
-        for i,track in enumerate(atm_tracks):
-            fig,ax = model.plot_stellar_model(stellar_model, track)
-            fig.savefig(full_fn(f'plots/stellar_model_step0b_track{i}'))
-            plt.close(fig)
 
         # Self-cleaning: Identify outlier stars to exclude from further training,
         # using distance from priors
@@ -394,6 +401,10 @@ def train(data_fname, output_dir, stage=0, thin=1):
             fig,ax = model.plot_stellar_model(stellar_model, track)
             fig.savefig(full_fn(f'plots/stellar_model_step0c_track{i}'))
             plt.close(fig)
+        
+        fig,ax = plot_extinction_curve(flux_model, show_variation=False)
+        fig.savefig(full_fn('plots/extinction_curve_step0c'))
+        plt.close(fig)
         
         np.save(full_fn('index/idx_good_wo_Rv.npy'), idx_good)
         stellar_model.save(full_fn('models/flux/xp_spectrum_model_final'))
@@ -589,6 +600,10 @@ def train(data_fname, output_dir, stage=0, thin=1):
             fig.savefig(full_fn(f'plots/stellar_model_step2_track{i}'))
             plt.close(fig)
         
+        fig,ax = plot_extinction_curve(flux_model, show_variation=True)
+        fig.savefig(full_fn('plots/extinction_curve_step2'))
+        plt.close(fig)
+        
         save_as_h5(d_train, full_fn('data/dtrain_Rv_intermediate_0.h5'))
         save_as_h5(ret, full_fn('hist_loss/Rv_intermediate_0.h5'))
         stellar_model.save(
@@ -624,12 +639,6 @@ def train(data_fname, output_dir, stage=0, thin=1):
             n_epochs=n_epochs,
             var_update = ['atm','E','plx','xi'],
         )
-
-        print('Plotting stellar model ...')
-        for i,track in enumerate(atm_tracks):
-            fig,ax = model.plot_stellar_model(stellar_model, track)
-            fig.savefig(full_fn(f'plots/stellar_model_step3_track{i}'))
-            plt.close(fig)
        
         save_as_h5(d_train, full_fn('data/dtrain_Rv_intermediate_1.h5'))
         save_as_h5(ret, full_fn('hist_loss/Rv_intermediate_1.h5'))
@@ -695,7 +704,17 @@ def train(data_fname, output_dir, stage=0, thin=1):
             n_epochs=n_epochs,
             var_update = ['atm','E','plx','xi'],
             model_update = ['stellar_model', 'ext_curve_w', 'ext_curve_b'],
-        )               
+        )
+        
+        print('Plotting stellar model ...')
+        for i,track in enumerate(atm_tracks):
+            fig,ax = model.plot_stellar_model(stellar_model, track)
+            fig.savefig(full_fn(f'plots/stellar_model_step3_track{i}'))
+            plt.close(fig)
+        
+        fig,ax = plot_extinction_curve(flux_model, show_variation=True)
+        fig.savefig(full_fn('plots/extinction_curve_step3'))
+        plt.close(fig)
         
         stellar_model.save(full_fn('models/flux/xp_spectrum_model_final_Rv'))
         save_as_h5(ret, full_fn('hist_loss/final_Rv.h5'))
