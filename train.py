@@ -292,7 +292,7 @@ def train(data_fname, output_dir, stage=0, thin=1):
             fig.savefig(full_fn(f'plots/stellar_model_step0a_track{i}'))
             plt.close(fig)
         
-        fig,ax = plot_extinction_curve(flux_model, show_variation=False)
+        fig,_ = model.plot_extinction_curve(stellar_model, show_variation=False)
         fig.savefig(full_fn('plots/extinction_curve_step0a'))
         plt.close(fig)
 
@@ -324,7 +324,7 @@ def train(data_fname, output_dir, stage=0, thin=1):
             fig.savefig(full_fn(f'plots/stellar_model_step0b_track{i}'))
             plt.close(fig)
         
-        fig,ax = plot_extinction_curve(flux_model, show_variation=False)
+        fig,_ = model.plot_extinction_curve(stellar_model, show_variation=False)
         fig.savefig(full_fn('plots/extinction_curve_step0b'))
         plt.close(fig)
 
@@ -402,7 +402,7 @@ def train(data_fname, output_dir, stage=0, thin=1):
             fig.savefig(full_fn(f'plots/stellar_model_step0c_track{i}'))
             plt.close(fig)
         
-        fig,ax = plot_extinction_curve(flux_model, show_variation=False)
+        fig,_ = model.plot_extinction_curve(stellar_model, show_variation=False)
         fig.savefig(full_fn('plots/extinction_curve_step0c'))
         plt.close(fig)
         
@@ -600,7 +600,7 @@ def train(data_fname, output_dir, stage=0, thin=1):
             fig.savefig(full_fn(f'plots/stellar_model_step2_track{i}'))
             plt.close(fig)
         
-        fig,ax = plot_extinction_curve(flux_model, show_variation=True)
+        fig,_ = model.plot_extinction_curve(stellar_model, show_variation=True)
         fig.savefig(full_fn('plots/extinction_curve_step2'))
         plt.close(fig)
         
@@ -712,7 +712,7 @@ def train(data_fname, output_dir, stage=0, thin=1):
             fig.savefig(full_fn(f'plots/stellar_model_step3_track{i}'))
             plt.close(fig)
         
-        fig,ax = plot_extinction_curve(flux_model, show_variation=True)
+        fig,_ = model.plot_extinction_curve(stellar_model, show_variation=True)
         fig.savefig(full_fn('plots/extinction_curve_step3'))
         plt.close(fig)
         
