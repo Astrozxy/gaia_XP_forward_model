@@ -119,8 +119,14 @@ class FluxModel(snt.Module):
         self._activation = tf.math.tanh
         
         # Initialize extinction curve
-        self._ext_slope = tf.Variable(tf.zeros( (1, self._n_output) ), name='ext_slope')
-        self._ext_bias = tf.Variable(tf.zeros( (1, self._n_output) ), name='ext_bias')        
+        self._ext_slope = tf.Variable(
+            tf.zeros((1, self._n_output)),
+            name='ext_slope'
+        )
+        self._ext_bias = tf.Variable(
+            tf.zeros((1, self._n_output)),
+            name='ext_bias'
+        )
 
         # Initialize neural network        
         self.predict_intrinsic_ln_flux(tf.zeros([1,n_input]))
@@ -129,7 +135,7 @@ class FluxModel(snt.Module):
         # Initial guess of the extinction curve
         R0_guess = np.log(2 * (sample_wavelengths / 550.)**(-1.5))
         R0_guess = R0_guess.astype('float32')
-        R1_guess = (sample_wavelengths - 550.)/(992.-392.)
+        R1_guess = np.clip((sample_wavelengths-550.)/(992.-392.), -1., 1.)
         R1_guess = R1_guess.astype('float32')
         
         self._ext_bias.assign(R0_guess.reshape(1,-1))
