@@ -11,7 +11,7 @@ from matplotlib.cm import ScalarMappable
 from matplotlib.gridspec import GridSpec
 
 import os
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3' 
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 import tensorflow as tf
 import tensorflow.keras as keras
 import tensorflow_probability as tfp
@@ -119,8 +119,14 @@ class FluxModel(snt.Module):
         self._activation = tf.math.tanh
         
         # Initialize extinction curve
-        self._ext_slope = tf.Variable(tf.zeros( (1, self._n_output) ), name='ext_slope')
-        self._ext_bias = tf.Variable(tf.zeros( (1, self._n_output) ), name='ext_bias')        
+        self._ext_slope = tf.Variable(
+            tf.zeros((1, self._n_output)),
+            name='ext_slope'
+        )
+        self._ext_bias = tf.Variable(
+            tf.zeros((1, self._n_output)),
+            name='ext_bias'
+        )
 
         # Initialize neural network        
         self.predict_intrinsic_ln_flux(tf.zeros([1,n_input]))
@@ -129,7 +135,7 @@ class FluxModel(snt.Module):
         # Initial guess of the extinction curve
         R0_guess = np.log(2 * (sample_wavelengths/550.)**(-1.5))
         R0_guess = R0_guess.astype('float32')
-        R1_guess = np.clip((sample_wavelengths-550.)/(992.-392.),-1,1,)
+        R1_guess = np.clip((sample_wavelengths-550.)/(992.-392.), -1., 1.)
         R1_guess = R1_guess.astype('float32')
         
         self._ext_bias.assign(R0_guess.reshape(1,-1))
@@ -1223,6 +1229,9 @@ def plot_stellar_model(flux_model, track, show_lines=('hydrogen','metals')):
         r'$f_{\lambda}\ '
         r'\left(10^{-18}\,\mathrm{W\,m^{-2}\,nm^{-1}}\right)$'
     )
+    
+    ax.grid(True, which='major', alpha=0.2)
+    ax.grid(True, which='minor', alpha=0.05)
 
     show_lines = ('hydrogen', 'metals')
 
@@ -1239,6 +1248,50 @@ def plot_stellar_model(flux_model, track, show_lines=('hydrogen','metals')):
     frame = legend.get_frame() 
     frame.set_alpha(1) 
     frame.set_facecolor('white')
+    
+    return fig, ax
+
+
+def plot_extinction_curve(flux_model, show_variation=True):
+    sample_wavelengths = flux_model.get_sample_wavelengths()
+    if show_variation:
+        xi = np.linspace(-0.5, 0.5, 11, dtype='f4')
+    else:
+        xi = np.array([0.], dtype='f4')
+    R = np.exp(flux_model.predict_ln_ext_curve(xi).numpy())
+
+    lam_BV = np.array([431.8, 533.5])
+
+    idx_BV = np.searchsorted(sample_wavelengths, lam_BV)
+    lam1 = sample_wavelengths[idx_BV]
+    lam0 = sample_wavelengths[idx_BV-1]
+    a1 = (lam_BV - lam0) / (lam1 - lam0)
+
+    R_BV = (1-a1)*R[:,idx_BV-1] + a1*R[:,idx_BV]
+    R_V = R_BV[:,1] / (R_BV[:,0] - R_BV[:,1])
+
+    fig = plt.figure(figsize=(6,4), layout='constrained')
+    ax = fig.add_subplot(1,1,1)
+
+    norm = Normalize(np.min(R_V), np.max(R_V))
+    cmap = plt.get_cmap('coolwarm_r')
+    c = cmap(norm(R_V))
+
+    for xi_i,R_i,RV_i,cc in zip(xi,R,R_V,c):
+        ax.semilogx(sample_wavelengths, R_i, c=cc)
+
+    cb = fig.colorbar(
+        ScalarMappable(norm=norm, cmap=cmap),
+        ax=ax,
+        label=r'$R_V$'
+    )
+
+    ax.yaxis.set_minor_locator(ticker.AutoMinorLocator())
+    ax.grid(True, which='major', alpha=0.2)
+    ax.grid(True, which='minor', alpha=0.05)
+
+    ax.set_xlabel(r'$\lambda\ \left(\mathrm{nm}\right)$')
+    ax.set_ylabel(r'$R_{\lambda}\ \left(\mathrm{mag}\right)$')
     
     return fig, ax
 

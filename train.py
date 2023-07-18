@@ -243,8 +243,8 @@ def train(data_fname, output_dir, stage=0, thin=1):
           & (d_train['stellar_ext_err'] < 0.1)
         )[0]
         n_hq = len(idx_hq)
-        pct_hq = n_hq / d_train['plx'].shape[0] * 100
-        print(f'Training on {n_hq} ({pct_hq:.3g}%) high-quality stars ...')
+        pct_hq = n_hq / d_train['plx'].shape[0]
+        print(f'Training on {n_hq} ({pct_hq:.3%}) high-quality stars ...')
         
         stellar_model = FluxModel(
             sample_wavelengths, n_input=n_stellar_params,
@@ -277,7 +277,7 @@ def train(data_fname, output_dir, stage=0, thin=1):
             optimize_stellar_params=False,
             batch_size=batch_size,
             n_epochs=n_epochs,
-            model_update=['stellar_model',  'ext_curve_b'],
+            model_update=['stellar_model','ext_curve_b'],
         )
         loss_hist.append(ret)
         stellar_model.save(full_fn('models/flux/xp_spectrum_model_initial'))
@@ -288,6 +288,10 @@ def train(data_fname, output_dir, stage=0, thin=1):
             fig,ax = model.plot_stellar_model(stellar_model, track)
             fig.savefig(full_fn(f'plots/stellar_model_step0a_track{i}'))
             plt.close(fig)
+        
+        fig,_ = model.plot_extinction_curve(stellar_model, show_variation=False)
+        fig.savefig(full_fn('plots/extinction_curve_step0a'))
+        plt.close(fig)
 
         # Next, simultaneously train the stellar model and update stellar
         # parameters, using only the HQ data
@@ -302,7 +306,7 @@ def train(data_fname, output_dir, stage=0, thin=1):
             lr_model_init=1e-5,
             batch_size=batch_size,
             n_epochs=n_epochs,
-            model_update=['stellar_model',  'ext_curve_b'],
+            model_update=['stellar_model','ext_curve_b'],
             var_update = ['atm','E','plx'],
         )
         loss_hist.append(ret)
@@ -310,6 +314,16 @@ def train(data_fname, output_dir, stage=0, thin=1):
         stellar_model.save(
             full_fn('models/flux/xp_spectrum_model_intermediate')
         )
+        
+        print('Plotting stellar model ...')
+        for i,track in enumerate(atm_tracks):
+            fig,ax = model.plot_stellar_model(stellar_model, track)
+            fig.savefig(full_fn(f'plots/stellar_model_step0b_track{i}'))
+            plt.close(fig)
+        
+        fig,_ = model.plot_extinction_curve(stellar_model, show_variation=False)
+        fig.savefig(full_fn('plots/extinction_curve_step0b'))
+        plt.close(fig)
 
         stellar_model = FluxModel.load(
             full_fn('models/flux/xp_spectrum_model_intermediate-1')
@@ -327,19 +341,12 @@ def train(data_fname, output_dir, stage=0, thin=1):
             var_update = ['atm','E','plx'],
         )
         loss_hist.append(ret)
-        
-        # Generate tracks through stellar parameter space and plot stellar model
-        print('Plotting stellar model ...')
-        for i,track in enumerate(atm_tracks):
-            fig,ax = model.plot_stellar_model(stellar_model, track)
-            fig.savefig(full_fn(f'plots/stellar_model_step0b_track{i}'))
-            plt.close(fig)
 
         # Self-cleaning: Identify outlier stars to exclude from further training,
         # using distance from priors
         idx_params_good = identify_outlier_stars(d_train)
-        pct_good = 100*np.mean(idx_params_good)
-        print(f'Parameter outliers: {100-pct_good:.3f}% of sources.')
+        pct_good = np.mean(idx_params_good)
+        print(f'Parameter outliers: {1-pct_good:.3%} of sources.')
 
         idx_flux_good = identify_flux_outliers(
             d_train, stellar_model,
@@ -347,12 +354,12 @@ def train(data_fname, output_dir, stage=0, thin=1):
             #chi_indiv_clip=20.
         )
         
-        pct_good = 100*np.mean(idx_flux_good)
-        print(f'Flux outliers: {100-pct_good:.3f}% of sources.')
+        pct_good = np.mean(idx_flux_good)
+        print(f'Flux outliers: {1-pct_good:.3%} of sources.')
 
         idx_good = idx_params_good & idx_flux_good
-        pct_good = 100*np.mean(idx_good)
-        print(f'Combined outliers: {100-pct_good:.3f}% of sources.')
+        pct_good = np.mean(idx_good)
+        print(f'Combined outliers: {1-pct_good:.3%} of sources.')
         
         title = (
             r'$\mathrm{Training\ distribution'
@@ -392,7 +399,11 @@ def train(data_fname, output_dir, stage=0, thin=1):
             fig.savefig(full_fn(f'plots/stellar_model_step0c_track{i}'))
             plt.close(fig)
         
-        np.save(full_fn('index/idx_good_wo_Rv.npy'), idx_good)       
+        fig,_ = model.plot_extinction_curve(stellar_model, show_variation=False)
+        fig.savefig(full_fn('plots/extinction_curve_step0c'))
+        plt.close(fig)
+        
+        np.save(full_fn('index/idx_good_wo_Rv.npy'), idx_good)
         stellar_model.save(full_fn('models/flux/xp_spectrum_model_final'))
         save_as_h5(d_train, full_fn('data/dtrain_final_wo_Rv.h5'))
         save_as_h5(ret, full_fn('hist_loss/final_wo_Rv.h5'))
@@ -401,6 +412,9 @@ def train(data_fname, output_dir, stage=0, thin=1):
          
         d_val = load_h5(full_fn('data/d_val.h5'))
         d_train = load_h5(full_fn('data/dtrain_final_wo_Rv.h5'))
+        atm_tracks = model.load_stellar_type_tracks(
+            full_fn('models/prior/tracks.h5')
+        )
         
         stellar_model = FluxModel.load(
             full_fn('models/flux/xp_spectrum_model_final-1')
@@ -414,7 +428,7 @@ def train(data_fname, output_dir, stage=0, thin=1):
         # Initial weight of stars: equal
         weights_per_star = np.ones(len(d_train["plx"]), dtype='f4')
         
-        idx_hq= np.load(full_fn('index/idx_good_wo_Rv.npy'))
+        idx_hq = np.load(full_fn('index/idx_good_wo_Rv.npy'))
 
         # Optimize the params of high-quality stars 
         n_epochs = 128
@@ -438,6 +452,18 @@ def train(data_fname, output_dir, stage=0, thin=1):
         idx_hq_large_E = idx_hq & (d_train['stellar_ext_est']>0.1)
         pct_use = np.mean(idx_hq_large_E)
         print(f'Learning (xi, E, plx) for {pct_use:.3%} of sources.')
+
+        title = (
+            r'$\mathrm{Training\ distribution'
+            r'\ (step\ 1a:\ HQ,\ large\ E):'
+            r'\ stellar\ type}$'
+        )
+        plot_param_histograms_1d(
+            d_train['stellar_type'][idx_hq_large_E],
+            weights_per_star[idx_hq_large_E],
+            title,
+            full_fn('plots/training_stellar_type_hist1d_step1a')
+        )
         
         ret = train_stellar_model(
             stellar_model,
@@ -461,6 +487,18 @@ def train(data_fname, output_dir, stage=0, thin=1):
         
         weights_per_star /= (0.001+np.median(weights_per_star))
         weights_per_star *= (1./(all_prior+1/max_upsampling)).astype('f4')
+
+        title = (
+            r'$\mathrm{Training\ distribution'
+            r'\ (step\ 1b:\ HQ,\ large\ E):'
+            r'\ stellar\ type}$'
+        )
+        plot_param_histograms_1d(
+            d_train['stellar_type'][idx_hq_large_E],
+            weights_per_star[idx_hq_large_E],
+            title,
+            full_fn('plots/training_stellar_type_hist1d_step1b')
+        )
         
         ret = train_stellar_model(
             stellar_model,
@@ -542,6 +580,10 @@ def train(data_fname, output_dir, stage=0, thin=1):
             fig.savefig(full_fn(f'plots/stellar_model_step2_track{i}'))
             plt.close(fig)
         
+        fig,_ = model.plot_extinction_curve(stellar_model, show_variation=True)
+        fig.savefig(full_fn('plots/extinction_curve_step2'))
+        plt.close(fig)
+        
         save_as_h5(d_train, full_fn('data/dtrain_Rv_intermediate_0.h5'))
         save_as_h5(ret, full_fn('hist_loss/Rv_intermediate_0.h5'))
         stellar_model.save(
@@ -556,6 +598,9 @@ def train(data_fname, output_dir, stage=0, thin=1):
         
         d_train = load_h5(full_fn('data/dtrain_Rv_intermediate_0.h5'))
         d_val = load_h5(full_fn('data/d_val.h5'))
+        atm_tracks = model.load_stellar_type_tracks(
+            full_fn('models/prior/tracks.h5')
+        )
      
         # Optimize all stellar params, in order to pick up 
         # stars that were rejected due to extinction variation law
@@ -573,12 +618,6 @@ def train(data_fname, output_dir, stage=0, thin=1):
             n_epochs=n_epochs,
             var_update = ['atm','E','plx','xi'],
         )
-
-        print('Plotting stellar model ...')
-        for i,track in enumerate(atm_tracks):
-            fig,ax = model.plot_stellar_model(stellar_model, track)
-            fig.savefig(full_fn(f'plots/stellar_model_step3_track{i}'))
-            plt.close(fig)
        
         save_as_h5(d_train, full_fn('data/dtrain_Rv_intermediate_1.h5'))
         save_as_h5(ret, full_fn('hist_loss/Rv_intermediate_1.h5'))
@@ -594,23 +633,23 @@ def train(data_fname, output_dir, stage=0, thin=1):
             sigma_clip_feh=10.,
         )
         pct_good = np.mean(idx_params_good)
-        print(f'Parameter outliers: {100-pct_good:.3%} of sources.')
+        print(f'Parameter outliers: {1-pct_good:.3%} of sources.')
 
         idx_flux_good = identify_flux_outliers(
             d_train, stellar_model,
             chi2_dof_clip=10.,
             #chi_indiv_clip=20.
         )
-        pct_good = 100*np.mean(idx_flux_good)
-        print(f'Flux outliers: {100-pct_good:.3g}% of sources.')
+        pct_good = np.mean(idx_flux_good)
+        print(f'Flux outliers: {1-pct_good:.3%} of sources.')
 
         idx_good = idx_params_good & idx_flux_good
-        pct_good = 100*np.mean(idx_good)
-        print(f'Combined outliers: {100-pct_good:.3f}% of sources.')        
+        pct_good = np.mean(idx_good)
+        print(f'Combined outliers: {1-pct_good:.3%} of sources.')        
                 
-        idx_final_train  =  idx_good #& (d_train['stellar_ext_est']>0.1)
-        pct_use = 100*np.mean(idx_final_train)
-        print(f'Training on {pct_use:.3g}% of sources.')
+        idx_final_train = idx_good #& (d_train['stellar_ext_est']>0.1)
+        pct_use = np.mean(idx_final_train)
+        print(f'Training on {pct_use:.3%} of sources.')
 
         weights_per_star = down_sample_weighing( 
             d_train['xi_est'][idx_final_train],
@@ -619,6 +658,18 @@ def train(data_fname, output_dir, stage=0, thin=1):
         )
         weights_per_star /= (0.001+np.median(weights_per_star))
         weights_per_star *= weigh_prior(stellar_type_prior, d_train)
+
+        title = (
+            r'$\mathrm{Training\ distribution'
+            r'\ (step\ 3a:\ cut\ flux/param\ outliers):'
+            r'\ stellar\ type}$'
+        )
+        plot_param_histograms_1d(
+            d_train['stellar_type'][idx_final_train],
+            weights_per_star[idx_final_train],
+            title,
+            full_fn('plots/training_stellar_type_hist1d_step3a')
+        )
 
         ret = train_stellar_model(
             stellar_model,
@@ -633,7 +684,17 @@ def train(data_fname, output_dir, stage=0, thin=1):
             n_epochs=n_epochs,
             var_update = ['atm','E','plx','xi'],
             model_update = ['stellar_model', 'ext_curve_w', 'ext_curve_b'],
-        )               
+        )
+        
+        print('Plotting stellar model ...')
+        for i,track in enumerate(atm_tracks):
+            fig,ax = model.plot_stellar_model(stellar_model, track)
+            fig.savefig(full_fn(f'plots/stellar_model_step3_track{i}'))
+            plt.close(fig)
+        
+        fig,_ = model.plot_extinction_curve(stellar_model, show_variation=True)
+        fig.savefig(full_fn('plots/extinction_curve_step3'))
+        plt.close(fig)
         
         stellar_model.save(full_fn('models/flux/xp_spectrum_model_final_Rv'))
         save_as_h5(ret, full_fn('hist_loss/final_Rv.h5'))
