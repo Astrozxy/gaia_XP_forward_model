@@ -99,7 +99,9 @@ def extract_fluxes(fid, match_source_ids=None, thin=1):
     d_meta = Table.read(meta_fn)[::thin]
 
     # Match XP and stellar parameters
-    if match_source_ids is not None:
+    if match_source_ids is None:
+        idx_xp = range(len(d_meta))
+    else:
         idx_xp, idx_matches = get_match_indices(
             d_meta['source_id'],
             match_source_ids
@@ -134,6 +136,7 @@ def extract_fluxes(fid, match_source_ids=None, thin=1):
         # Apply cut
         idx_matches = idx_matches[idx_good]
         d_meta = d_meta[idx_good]
+        idx_xp = idx_xp[idx_good]
 
     n = len(d_meta) # Number of XP sources selected
     if n == 0:
@@ -141,22 +144,6 @@ def extract_fluxes(fid, match_source_ids=None, thin=1):
 
     # The GDR3 source IDs of the sources that will be in the output
     gdr3_source_id = d_meta['source_id']
-
-    # Load XP information
-    xp_fn = (
-        'data/xp_continuous_mean_spectrum/'
-       f'XpContinuousMeanSpectrum_{fid}.h5'
-    )
-    d_xp = {}
-    with h5py.File(xp_fn, 'r') as f:
-        for key,f_bad,fill_bad in bprp_fields:
-            x = f[key][:]
-            # Fix any problems in XP spectral data
-            idx_bad = f_bad(x)
-            if np.any(idx_bad):
-                logging.warning(f'{fid}: Fixing bad {key} values.')
-                x[idx_bad] = fill_bad
-            d_xp[key] = x
 
     # Load stellar extinctions
     E_fname = f'data/xp_dustmap_match/xp_reddening_match_{fid}.h5'
@@ -213,16 +200,32 @@ def extract_fluxes(fid, match_source_ids=None, thin=1):
             s = '-'
         logging.info(f'{fid}: reddening: {n_s} sources use {s} ({pct:.3g}%)')
 
+    # Load XP information
+    xp_fn = (
+        'data/xp_continuous_mean_spectrum/'
+       f'XpContinuousMeanSpectrum_{fid}.h5'
+    )
+    d_xp = {}
+    with h5py.File(xp_fn, 'r') as f:
+        for key,f_bad,fill_bad in bprp_fields:
+            x = f[key][:][::thin]
+            # Fix any problems in XP spectral data
+            idx_bad = f_bad(x)
+            if np.any(idx_bad):
+                logging.warning(f'{fid}: Fixing bad {key} values.')
+                x[idx_bad] = fill_bad
+            d_xp[key] = x
+
     # Sample XP spectra
     flux = np.zeros((n,n_wl+n_b), dtype='f4')
     flux_err = np.full((n,n_wl+n_b), np.nan, dtype='f4')
     flux_sqrticov = np.zeros((n,n_wl+n_b,n_wl+n_b), dtype='f4')
     flux_cov_eival_min = np.empty(n, dtype='f4')
     flux_cov_eival_max = np.empty(n, dtype='f4')
-    for j in range(n):
+    for j,i_xp in enumerate(idx_xp):
         # Get sampled spectrum and covariance matrix
         fl,fl_err,fl_cov,_,_ = xp_sampler.sample(
-            *[d_xp[k][j] for k,_,_ in bprp_fields],
+            *[d_xp[k][i_xp] for k,_,_ in bprp_fields],
             bp_zp_errfrac=0.001, # BP zero-point uncertainty
             rp_zp_errfrac=0.001, # RP zero-point uncertainty
             zp_errfrac=0.005, # Joint BP/RP zero-point uncertainty
