@@ -16,6 +16,7 @@ from argparse import ArgumentParser
 from glob import glob
 
 from xp_utils import XPSampler, sqrt_icov_eigen
+from model import load_h5
 
 
 def get_match_indices(a, b):
@@ -95,7 +96,7 @@ def extract_fluxes(fid, match_source_ids=None, thin=1):
     ])
 
     # Load Gaia metadata
-    meta_fn = f'data/xp_metadata/xp_metadata_{fid}.h5'
+    meta_fn = f'data/xp_continuous_metadata/xp_metadata_{fid}.h5'
     d_meta = Table.read(meta_fn)[::thin]
 
     # Match XP and stellar parameters
@@ -483,8 +484,14 @@ def main():
     )
 
     # Load the stellar parameters linked to Gaia source_ids
-    d_params = Table.read(args.stellar_params)
-    d_params.sort('gdr3_source_id')
+    #d_params = Table.read(args.stellar_params)
+    d_params = load_h5(args.stellar_params)
+    #d_params.sort('gdr3_source_id')
+    idx = np.argsort(d_params['gdr3_source_id'])
+    for key in d_params.keys():
+        d_params[key] = d_params[key][idx]
+    idx = 0
+    
     print(f'Loaded {len(d_params)} source_ids for training dataset.')
 
     # Compile required data (Gaia,2MASS,WISE,Bayestar) for each training star
