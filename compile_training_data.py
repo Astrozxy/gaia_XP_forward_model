@@ -96,7 +96,7 @@ def extract_fluxes(fid, match_source_ids=None, thin=1):
     ])
 
     # Load Gaia metadata
-    meta_fn = f'data/xp_continuous_metadata/xp_metadata_{fid}.h5'
+    meta_fn = f'data/xp_metadata/xp_metadata_{fid}.h5'
     d_meta = Table.read(meta_fn)[::thin]
 
     # Match XP and stellar parameters
