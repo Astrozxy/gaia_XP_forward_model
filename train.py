@@ -129,14 +129,14 @@ def plot_param_histograms_1d(stellar_type, weights, title, fname):
     plt.close(fig)
     
     
-def weigh_prior(stellar_type_prior, d_train)
+def weigh_prior(stellar_type_prior, d_train):
     all_ln_prior = batch_apply_tf(
-            stellar_type_prior.ln_prob,
-            1024,
-            d_train['stellar_type'],
-            function=True,
-            progress=True,
-            numpy=True
+        stellar_type_prior.ln_prob,
+        1024,
+        d_train['stellar_type'],
+        function=True,
+        progress=True,
+        numpy=True
     )
     all_prior = np.exp(all_ln_prior)
     all_prior /= np.max(all_prior)
@@ -147,6 +147,7 @@ def weigh_prior(stellar_type_prior, d_train)
     weights_per_star = (1./(all_prior+1/max_upsampling)).astype('f4')
     
     return weights_per_star
+
 
 def train(data_fname, output_dir, stage=0, thin=1):
     '''
@@ -486,7 +487,7 @@ def train(data_fname, output_dir, stage=0, thin=1):
         )
         
         weights_per_star /= (0.001+np.median(weights_per_star))
-        weights_per_star *= (1./(all_prior+1/max_upsampling)).astype('f4')
+        weights_per_star *= weigh_prior(stellar_type_prior, d_train)
 
         title = (
             r'$\mathrm{Training\ distribution'
