@@ -487,13 +487,15 @@ def main():
     )
 
     # Load the stellar parameters linked to Gaia source_ids
-    #d_params = Table.read(args.stellar_params)
-    d_params = load_h5(args.stellar_params)
-    #d_params.sort('gdr3_source_id')
-    idx = np.argsort(d_params['gdr3_source_id'])
-    for key in d_params.keys():
-        d_params[key] = d_params[key][idx]
-    idx = 0
+    try:
+        d_params = Table.read(args.stellar_params)
+        d_params.sort('gdr3_source_id')
+    except:
+        d_params = load_h5(args.stellar_params)
+        idx = np.argsort(d_params['gdr3_source_id'])
+        for key in d_params.keys():
+            d_params[key] = d_params[key][idx]
+        idx = 0
     
     print(f'Loaded {len(d_params)} source_ids for training dataset.')
 
