@@ -25,8 +25,8 @@ def load_training_data(fname, validation_frac=0.2, seed=1, thin=1):
     # Load training data
     with h5py.File(fname, 'r') as f:
         d = {key:f[key][:][::thin] for key in f.keys()}
-        sample_wavelengths = f['flux'].attrs['sample_wavelengths'][:]
-
+        #sample_wavelengths = f['flux'].attrs['sample_wavelengths'][:]
+    sample_wavelengths = np.load('wl.npy')
     # Ensure that certain fields are in float32 format
     f4_keys = [
         'flux', 'flux_err', 'flux_sqrticov',
@@ -159,7 +159,7 @@ def train(data_fname, output_dir, stage=0, thin=1):
     '''
 
     # General training parameters
-    n_epochs = 128
+    n_epochs = 256
     batch_size = 1024
     n_bins = 100
     
@@ -253,7 +253,7 @@ def train(data_fname, output_dir, stage=0, thin=1):
             input_scale=0.5*(p_high-p_low),
             #hidden_size=32,
             hidden_size=64,
-            l2=0.1, l2_ext_curve=1.
+            l2=0.01, l2_ext_curve=1.
          )   
         
         # First, train the model with stars with good measurements,
@@ -432,7 +432,7 @@ def train(data_fname, output_dir, stage=0, thin=1):
         idx_hq = np.load(full_fn('index/idx_good_wo_Rv.npy'))
 
         # Optimize the params of high-quality stars 
-        n_epochs = 128
+        #n_epochs = 128
         print('Optimizing params of hq stars')
         ret = train_stellar_model(
             stellar_model,
@@ -500,7 +500,7 @@ def train(data_fname, output_dir, stage=0, thin=1):
             title,
             full_fn('plots/training_stellar_type_hist1d_step1b')
         )
-        
+
         ret = train_stellar_model(
             stellar_model,
             d_train, d_val,
@@ -541,7 +541,7 @@ def train(data_fname, output_dir, stage=0, thin=1):
         
     if stage<3:
         
-        n_epochs = 128
+        #n_epochs = 128
         
         stellar_model = FluxModel.load(
             full_fn('models/flux/xp_spectrum_model_initial_Rv-1')
@@ -606,7 +606,7 @@ def train(data_fname, output_dir, stage=0, thin=1):
         # Optimize all stellar params, in order to pick up 
         # stars that were rejected due to extinction variation law
         
-        n_epochs = 128
+        #n_epochs = 128
         
         ret = train_stellar_model(
             stellar_model,
