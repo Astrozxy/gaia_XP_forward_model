@@ -158,10 +158,10 @@ def extract_fluxes(fid, match_source_ids=None, thin=1):
         unit='deg', frame='icrs'
     )
     n_noE = n - len(idx_insert_E)
-    pct_noE = 100 * n_noE / n
-    logging.info(f'{fid}: {n_noE} have no reddening ({pct_noE:.3g}%).')
-    stellar_ext = np.full(n, 0.)
-    stellar_ext_err = np.full(n, np.inf)
+    logging.info(f'{fid}: {n_noE} have no reddening ({n_noE/n:.3%}).')
+    # Default (when no good extinction measurement present): SFD +- SFD
+    stellar_ext = d_E['E_mean_sfd']
+    stellar_ext_err = d_E['E_mean_sfd']
     stellar_ext_source = np.full(n, '', dtype='S12')
     # Order or priority: Bayestar, SFD (only above plane), nothing
     idx = np.isfinite(d_E['E_mean_bayestar'])
@@ -182,7 +182,7 @@ def extract_fluxes(fid, match_source_ids=None, thin=1):
     idx_aboveplane = (np.abs(z_gal_lower) > z_min)
     idx = idx_aboveplane & ~np.isfinite(d_E['E_mean_bayestar'])
     stellar_ext[idx_insert_E[idx]] = d_E['E_mean_sfd'][idx]
-    stellar_ext_err[idx_insert_E[idx]] = 0.
+    stellar_ext_err[idx_insert_E[idx]] = 0. # This will be inflated later
     stellar_ext_source[idx_insert_E[idx]] = 'sfd'
     # Inflate all reddening uncertainties
     stellar_ext_err_floor_abs = 0.03
@@ -195,11 +195,10 @@ def extract_fluxes(fid, match_source_ids=None, thin=1):
     # Log statistics
     source_name,n_source = np.unique(stellar_ext_source, return_counts=True)
     for s,n_s in zip(source_name, n_source):
-        pct = 100 * n_s / n
         s = s.decode()
         if not len(s):
             s = '-'
-        logging.info(f'{fid}: reddening: {n_s} sources use {s} ({pct:.3g}%)')
+        logging.info(f'{fid}: reddening: {n_s} sources use {s} ({n_s/n:.3%})')
 
     # Load XP information
     xp_fn = (

@@ -492,7 +492,7 @@ def identify_flux_outliers(data,
 
 
 def train_stellar_model(stellar_model,
-                        d_train, d_val,
+                        d_train,
                         extra_weight,
                         idx_train=None,
                         optimize_stellar_model=True,
@@ -500,8 +500,8 @@ def train_stellar_model(stellar_model,
                         batch_size=128, n_epochs=32,
                         lr_stars_init=1e-3,
                         lr_model_init=1e-4,
-                        model_update = ['stellar_model','ext_curve_w', 'ext_curve_b'],
-                        var_update = ['atm','E','plx','xi'],
+                        model_update=['stellar_model','ext_curve_w','ext_curve_b'],
+                        var_update=['atm','E','plx','xi'],
                        ):
     
     # Make arrays to hold estimated stellar types
@@ -833,8 +833,11 @@ class GaussianMixtureModel(snt.Module):
         from sklearn.mixture import BayesianGaussianMixture
         gmm = BayesianGaussianMixture(
             n_components=self._n_components,
-            weight_concentration_prior=1./self._n_components,
-            reg_covar=1e-6
+            weight_concentration_prior=0.25/self._n_components,
+            reg_covar=1e-3,
+            max_iter=2048,
+            n_init=1,
+            verbose=2
         )
         gmm.fit(x)
 
@@ -903,7 +906,7 @@ class GaussianMixtureModel(snt.Module):
         return z
 
 
-def plot_gmm_prior(stellar_type_prior, base_path='.'):
+def plot_gmm_prior(stellar_type_prior, base_path='.', overlay_track=None):
     # Plot samples from prior
     import corner
 
@@ -1014,6 +1017,11 @@ def plot_gmm_prior(stellar_type_prior, base_path='.'):
                 p_fmt = {p:f'{l:.1%}' for p,l in zip(cs.levels,pct_levels)}
                 ax.clabel(cs, cs.levels, fmt=p_fmt, inline=True, fontsize=7)
 
+                # Overlay track?
+                if overlay_track is not None:
+                    curves = [overlay_track['curve_smooth'][:,d] for d in dims]
+                    ax.plot(curves[0], curves[1], c='gray')
+
                 if dims[1] == n_params-1:
                     ax.set_xlabel(labels[dims[0]])
                 else:
@@ -1027,10 +1035,11 @@ def plot_gmm_prior(stellar_type_prior, base_path='.'):
                 ax.set_xlim(ranges[dims[0]])
                 ax.set_ylim(ranges[dims[1]])
 
-        fn = os.path.join(
-            base_path, 'plots',
-            f'stellar_prior_marginals_{n_comp:02d}components_{suffix}'
-        )
+        fn = f'stellar_prior_marginals_{n_comp:02d}components'
+        if overlay_track is not None:
+            fn += f'_track_{overlay_track["title"]}'
+        fn += f'_{suffix}'
+        fn = os.path.join(base_path, 'plots', fn)
         fig.savefig(fn)
         plt.close(fig)
 
@@ -1185,7 +1194,8 @@ def load_stellar_type_tracks(fname):
     return tracks
 
 
-def plot_stellar_model(flux_model, track, show_lines=('hydrogen','metals')):
+def plot_stellar_model(flux_model, track,
+                       show_lines=('hydrogen','metals','molecules')):
     sample_wavelengths = flux_model.get_sample_wavelengths()
 
     def Ryd_wl(n0, n1):
@@ -1193,13 +1203,21 @@ def plot_stellar_model(flux_model, track, show_lines=('hydrogen','metals')):
 
     lines = {
         'hydrogen': [
-            (r'$\mathrm{Balmer\ series}$', [Ryd_wl(2,n) for n in (3,4,5,6)], 'g', ':'),
-            (r'$\mathrm{Paschen\ series}$', [Ryd_wl(3,n) for n in (8,9,10)], 'b', '-.')
+            (r'$\mathrm{Balmer\ series}$', [Ryd_wl(2,n) for n in (3,4,5,6)],
+                'g', ':'),
+            (r'$\mathrm{Paschen\ series}$', [Ryd_wl(3,n) for n in (8,9,10)],
+                'b', ':')
         ],
         'metals': [
             (r'$\mathrm{Mg}$', [518.362], 'orange', '-'),
-            (r'$\mathrm{Ca}$', [422.6727, 430.774, 854.2], 'violet', '--'),
-            (r'$\mathrm{Fe}$', [431.,438.,527.], 'purple', 'solid')
+            (r'$\mathrm{Ca}$', [422.6727, 430.774, 854.2], 'violet', '-'),
+            (r'$\mathrm{Fe}$', [431.,438.,527.], 'purple', '-')
+        ],
+        'molecules': [
+            #(r'$\mathrm{TiO}$', [632.2,656.9,665.1,705.3,766.6,820.6,843.2],
+            #    'gray', '--'),
+            (r'$\mathrm{TiO}$', [675.,715.,775.], 'gray', '--'),
+            (r'$\mathrm{CaH}$', [685.0], 'salmon', '--')
         ]
     }
     
@@ -1232,8 +1250,6 @@ def plot_stellar_model(flux_model, track, show_lines=('hydrogen','metals')):
     
     ax.grid(True, which='major', alpha=0.2)
     ax.grid(True, which='minor', alpha=0.05)
-
-    show_lines = ('hydrogen', 'metals')
 
     for key in show_lines:
         for line_label,line_wl,c,ls in lines[key]:
