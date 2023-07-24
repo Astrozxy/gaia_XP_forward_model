@@ -338,7 +338,7 @@ def train(data_fname, output_dir, stage=0, thin=1):
 
         # Update E for stars with large E uncertainties (often, +-inf)
         print('Optimizing uncertain E estimates ...')
-        idx_large_ext_err = (d_train['stellar_ext_err'] > 0.1)
+        idx_large_ext_err = np.where(d_train['stellar_ext_err'] > 0.1)[0]
         ret = train_stellar_model(
             stellar_model,
             d_train,
@@ -347,7 +347,8 @@ def train(data_fname, output_dir, stage=0, thin=1):
             optimize_stellar_model=False,
             optimize_stellar_params=True,
             batch_size=batch_size,
-            n_epochs=n_epochs,
+            lr_stars_init=1e-2,
+            n_epochs=32*n_epochs,
             var_update=['E'],
         )
 
