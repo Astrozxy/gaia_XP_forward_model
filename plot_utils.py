@@ -287,6 +287,9 @@ def hist2d_reduce(x, y, c, xlim=None, ylim=None, ax=None,
     kw.update(imshow_kw)
     im = ax.imshow(img.T, **kw)
 
+    ax.set_xlim(xlim)
+    ax.set_ylim(ylim)
+
     return im
 
 
