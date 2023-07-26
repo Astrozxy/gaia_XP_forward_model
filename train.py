@@ -26,8 +26,8 @@ def load_training_data(fname, validation_frac=0.2, seed=1, thin=1):
     # Load training data
     with h5py.File(fname, 'r') as f:
         d = {key:f[key][:][::thin] for key in f.keys()}
-        #sample_wavelengths = f['flux'].attrs['sample_wavelengths'][:]
-    sample_wavelengths = np.load('wl.npy')
+        sample_wavelengths = f['flux'].attrs['sample_wavelengths'][:]
+
     # Ensure that certain fields are in float32 format
     f4_keys = [
         'flux', 'flux_err', 'flux_sqrticov',
@@ -132,12 +132,12 @@ def plot_param_histograms_1d(stellar_type, weights, title, fname):
     
 def weigh_prior(stellar_type_prior, d_train):
     all_ln_prior = batch_apply_tf(
-            stellar_type_prior.ln_prob,
-            1024,
-            d_train['stellar_type'],
-            function=True,
-            progress=True,
-            numpy=True
+        stellar_type_prior.ln_prob,
+        1024,
+        d_train['stellar_type'],
+        function=True,
+        progress=True,
+        numpy=True
     )
     all_prior = np.exp(all_ln_prior)
     all_prior /= np.max(all_prior)
@@ -148,6 +148,7 @@ def weigh_prior(stellar_type_prior, d_train):
     weights_per_star = (1./(all_prior+1/max_upsampling)).astype('f4')
     
     return weights_per_star
+
 
 def train(data_fname, output_dir, stage=0, thin=1):
     '''
@@ -185,7 +186,7 @@ def train(data_fname, output_dir, stage=0, thin=1):
         d_train, d_val, sample_wavelengths = load_training_data(
             data_fname,
             thin=thin,
-            seed = 0,
+            seed=0,
         )
         n_train, n_val = [len(d['plx']) for d in (d_train,d_val)]
         print(f'Loaded {n_train} ({n_val}) training (validation) sources.')
@@ -222,6 +223,12 @@ def train(data_fname, output_dir, stage=0, thin=1):
             atm_tracks,
             full_fn('models/prior/tracks.h5')
         )
+        for track in atm_tracks:
+            plot_gmm_prior(
+                stellar_type_prior,
+                base_path=output_dir,
+                overlay_track=track
+            )
         
         # Initialize the parameter estimates at their measured (input) values
         for key in ('stellar_type', 'xi', 'stellar_ext', 'plx'):
@@ -270,7 +277,7 @@ def train(data_fname, output_dir, stage=0, thin=1):
         )
         ret = train_stellar_model(
             stellar_model,
-            d_train, d_val,
+            d_train,
             weights_per_star,
             idx_train=idx_hq,
             optimize_stellar_model=True,
@@ -298,7 +305,7 @@ def train(data_fname, output_dir, stage=0, thin=1):
         print('Training flux model and optimizing high-quality stars ...')
         ret = train_stellar_model(
             stellar_model,
-            d_train, d_val,
+            d_train,
             weights_per_star,
             idx_train=idx_hq,
             optimize_stellar_model=True,
@@ -329,17 +336,34 @@ def train(data_fname, output_dir, stage=0, thin=1):
         stellar_model = FluxModel.load(
             full_fn('models/flux/xp_spectrum_model_intermediate-1')
         )
+
+        # Update E for stars with large E uncertainties (often, +-inf)
+        print('Optimizing uncertain E estimates ...')
+        idx_large_ext_err = np.where(d_train['stellar_ext_err'] > 0.1)[0]
+        ret = train_stellar_model(
+            stellar_model,
+            d_train,
+            weights_per_star,
+            idx_train=idx_large_ext_err,
+            optimize_stellar_model=False,
+            optimize_stellar_params=True,
+            batch_size=batch_size,
+            lr_stars_init=1e-2,
+            n_epochs=32*n_epochs,
+            var_update=['E'],
+        )
+
         # Next, update parameters of all the stars, holding the model fixed
         print('Optimizing all stars ...')
         ret = train_stellar_model(
             stellar_model,
-            d_train, d_val,
+            d_train,
             weights_per_star,
             optimize_stellar_model=False,
             optimize_stellar_params=True,
             batch_size=batch_size,
             n_epochs=n_epochs,
-            var_update = ['atm','E','plx'],
+            var_update=['atm','E','plx'],
         )
         loss_hist.append(ret)
 
@@ -379,7 +403,7 @@ def train(data_fname, output_dir, stage=0, thin=1):
         print('Training flux model and optimizing all non-outlier stars ...')
         ret = train_stellar_model(
             stellar_model,
-            d_train, d_val,
+            d_train,
             weights_per_star,
             idx_train=np.where(idx_good)[0],
             optimize_stellar_model=True,
@@ -436,7 +460,7 @@ def train(data_fname, output_dir, stage=0, thin=1):
         print('Optimizing params of hq stars')
         ret = train_stellar_model(
             stellar_model,
-            d_train, d_val,
+            d_train,
             weights_per_star,
             idx_train=np.where(idx_hq)[0],
             optimize_stellar_model=False,
@@ -468,7 +492,7 @@ def train(data_fname, output_dir, stage=0, thin=1):
         
         ret = train_stellar_model(
             stellar_model,
-            d_train, d_val,
+            d_train,
             weights_per_star,
             idx_train=np.where(idx_hq_large_E)[0],
             optimize_stellar_model=False,
@@ -503,7 +527,7 @@ def train(data_fname, output_dir, stage=0, thin=1):
 
         ret = train_stellar_model(
             stellar_model,
-            d_train, d_val,
+            d_train,
             weights_per_star,
             idx_train=np.where(idx_hq_large_E)[0],
             optimize_stellar_model=True,
@@ -518,7 +542,7 @@ def train(data_fname, output_dir, stage=0, thin=1):
         
         ret = train_stellar_model(
             stellar_model,
-            d_train, d_val,
+            d_train,
             weights_per_star,
             idx_train=np.where(idx_hq_large_E)[0],
             optimize_stellar_model=True,
@@ -567,7 +591,7 @@ def train(data_fname, output_dir, stage=0, thin=1):
         
         ret = train_stellar_model(
             stellar_model,
-            d_train, d_val,
+            d_train,
             weights_per_star,
             idx_train=np.where(idx_hq)[0],
             optimize_stellar_model=True,
@@ -615,7 +639,7 @@ def train(data_fname, output_dir, stage=0, thin=1):
         
         ret = train_stellar_model(
             stellar_model,
-            d_train, d_val,
+            d_train,
             weights_per_star,
             #idx_train=idx_hq_large_E,
             optimize_stellar_model=False,
@@ -679,7 +703,7 @@ def train(data_fname, output_dir, stage=0, thin=1):
 
         ret = train_stellar_model(
             stellar_model,
-            d_train, d_val,
+            d_train,
             weights_per_star,
             idx_train=np.where(idx_final_train)[0],
             optimize_stellar_model=True,
@@ -707,7 +731,7 @@ def train(data_fname, output_dir, stage=0, thin=1):
 
         ret = train_stellar_model(
             stellar_model,
-            d_train, d_val,
+            d_train,
             weights_per_star,
             #idx_train=np.where(idx_final_train)[0],
             optimize_stellar_model=False,
@@ -722,7 +746,7 @@ def train(data_fname, output_dir, stage=0, thin=1):
         
         ret = train_stellar_model(
             stellar_model,
-            d_val, d_val,
+            d_val,
             weights_per_star,
             #idx_train=np.where(idx_final_train)[0],
             optimize_stellar_model=False,
