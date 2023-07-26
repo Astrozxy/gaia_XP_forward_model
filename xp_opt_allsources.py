@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+ #!/usr/bin/env python
 
 from __future__ import print_function, division
 
@@ -32,7 +32,8 @@ def load_data(fname):
         for key in f:
             d[key] = f[key][:]
             
-        sample_wavelengths = f['flux'].attrs['sample_wavelengths'][:]
+        sample_wavelengths = np.load('wl.npy')
+        #f['flux'].attrs['sample_wavelengths'][:]
 
     req_keys = (
         'gdr3_source_id',
@@ -121,7 +122,7 @@ def calc_param_cov(d):
 
 
 def save_opt_stellar_params(data, fname, overwrite=False):
-    keys = ('gdr3_source_id', 'stellar_type_est', 'stellar_ext_est', 'xi_est', 'plx_est')
+    keys = ('gdr3_source_id', 'stellar_type_est', 'xi_est', 'stellar_ext_est', 'plx_est')
     keys_opt = (
         'ra', 'dec',
         'phot_g_mean_flux', 'phot_g_mean_flux_error',
@@ -200,7 +201,7 @@ def main():
     # Input files
     in_fnames = glob(os.path.join(
         args.input_dir,
-        'xp_opt_input_*-*.h5'
+        '*.h5'
     ))
     in_fnames.sort()
     n_files = len(in_fnames)
@@ -230,6 +231,12 @@ def main():
     stellar_model = FluxModel.load('models/flux/xp_spectrum_model_final_Rv-1')
     print('Loading Gaussian Mixture Model prior on stellar type ...')
     stellar_type_prior = GaussianMixtureModel.load('models/prior/gmm_prior-1')
+    
+    # Calculate the clipping limit of ln_prior
+    samples = stellar_type_prior.sample(64*1024)
+    sample_ln_prior = stellar_type_prior.ln_prob(samples)
+    ln_prior_clip = np.percentile(sample_ln_prior, 0.001)
+    samples = 0
 
     # Loop over input files, optimizing all stars in each file
     for i,ifn in enumerate(tqdm(in_fnames)):
@@ -261,6 +268,7 @@ def main():
             batch_size=min([n_stars, 1024*32]),
             n_steps=1024*8,
             reduce_lr_every=128*6,
+            ln_prior_clip=ln_prior_clip,
             use_prior=stellar_type_prior
         )
 
@@ -276,6 +284,7 @@ def main():
                 kw['n_steps'] = 1024*12
                 kw['reduce_lr_every'] = 1024*4
                 kw['lr_init'] = 1e-5 / 2**(2*(k-1))
+                kw['']
 
             print(f'Optimizing stellar parameters with {kw["optimizer"]} ...')
             optimize_stellar_params(stellar_model, d, **kw)

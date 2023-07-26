@@ -20,6 +20,7 @@ from model import GaussianMixtureModel, FluxModel, chi_band, gaussian_prior, \
                   calc_stellar_fisher_hessian, load_data, save_as_h5, load_h5
 import model
 
+nscale=2.
 
 def load_training_data(fname, validation_frac=0.2, seed=1, thin=1):
     # Load training data
@@ -81,7 +82,7 @@ def down_sample_weighing(x_ini, all_x, bin_edges, n_bins=100):
     bin_indices = np.digitize(x_ini, bin_edges)
     counts = np.bincount(bin_indices, minlength=n_bins+3)
     weights = counts / counts.sum()  # convert counts to probabilities
-    weights_per_bin = 1./(weights+0.001)
+    weights_per_bin = 1./(weights+0.05)
     
     # Weigh all stars by the inverse of density of the ini sample
     bin_indices_all = np.digitize(all_x, bin_edges)
@@ -198,7 +199,7 @@ def train(data_fname, output_dir, stage=0, thin=1):
         
         # Generate GMM prior
         print('Generating Gaussian Mixture Model prior on stellar type ...')
-        stellar_type_prior = GaussianMixtureModel(3, n_components=8)
+        stellar_type_prior = GaussianMixtureModel(3, n_components=16)
         stellar_type_prior.fit(d_train['stellar_type'])
         stellar_type_prior.save(full_fn('models/prior/gmm_prior'))
         print('  -> Plotting prior ...')
@@ -250,9 +251,8 @@ def train(data_fname, output_dir, stage=0, thin=1):
             sample_wavelengths, n_input=n_stellar_params,
             input_zp=np.median(d_train['stellar_type'],axis=0),
             input_scale=0.5*(p_high-p_low),
-            #hidden_size=32,
             hidden_size=64,
-            l2=0.01, l2_ext_curve=1.
+            l2=0.01, l2_ext_curve=10.
          )   
         
         # First, train the model with stars with good measurements,
@@ -303,7 +303,8 @@ def train(data_fname, output_dir, stage=0, thin=1):
             idx_train=idx_hq,
             optimize_stellar_model=True,
             optimize_stellar_params=True,
-            lr_model_init=1e-5,
+            lr_model_init=1e-7*nscale,
+            lr_stars_init=1e-5*nscale,
             batch_size=batch_size,
             n_epochs=n_epochs,
             model_update=['stellar_model','ext_curve_b'],
@@ -383,8 +384,8 @@ def train(data_fname, output_dir, stage=0, thin=1):
             idx_train=np.where(idx_good)[0],
             optimize_stellar_model=True,
             optimize_stellar_params=True,
-            lr_model_init=1e-7,
-            lr_stars_init=1e-5,
+            lr_model_init=1e-7*nscale,
+            lr_stars_init=1e-5*nscale,
             batch_size=batch_size,
             n_epochs=n_epochs,
             model_update=['stellar_model','ext_curve_b'],
@@ -522,8 +523,8 @@ def train(data_fname, output_dir, stage=0, thin=1):
             idx_train=np.where(idx_hq_large_E)[0],
             optimize_stellar_model=True,
             optimize_stellar_params=True,
-            lr_model_init=1e-7,
-            lr_stars_init=1e-5,
+            lr_model_init=1e-7*nscale,
+            lr_stars_init=1e-5*nscale,
             batch_size=batch_size,
             n_epochs=n_epochs,
             var_update=['E', 'plx', 'xi'],
@@ -550,6 +551,11 @@ def train(data_fname, output_dir, stage=0, thin=1):
 
         idx_hq = np.load(full_fn('index/idx_good_wo_Rv.npy')) 
         
+        stellar_type_prior = GaussianMixtureModel.load(
+            full_fn('models/prior/gmm_prior-1')
+        )   
+        atm_tracks = model.calculate_stellar_type_tracks(stellar_type_prior)
+        
         weights_per_star = down_sample_weighing( 
             d_train['xi_est'][idx_hq],
             d_train['xi_est'], 
@@ -566,8 +572,8 @@ def train(data_fname, output_dir, stage=0, thin=1):
             idx_train=np.where(idx_hq)[0],
             optimize_stellar_model=True,
             optimize_stellar_params=True,
-            lr_model_init=1e-7,
-            lr_stars_init=1e-5,
+            lr_model_init=1e-7*nscale,
+            lr_stars_init=1e-5*nscale,
             batch_size=batch_size,
             n_epochs=n_epochs,
             var_update = ['atm','E','plx','xi'],
@@ -628,9 +634,9 @@ def train(data_fname, output_dir, stage=0, thin=1):
         # Remove outliers
         idx_params_good = identify_outlier_stars( # TODO: rename to "identify_param_outliers"
             d_train,
-            sigma_clip_teff=10., # TODO: Make this clipping be agnostic about the parameter names
-            sigma_clip_logg=10.,
-            sigma_clip_feh=10.,
+            sigma_clip_teff=4., # TODO: Make this clipping be agnostic about the parameter names
+            sigma_clip_logg=4.,
+            sigma_clip_feh=4.,
         )
         pct_good = np.mean(idx_params_good)
         print(f'Parameter outliers: {1-pct_good:.3%} of sources.')
@@ -678,8 +684,8 @@ def train(data_fname, output_dir, stage=0, thin=1):
             idx_train=np.where(idx_final_train)[0],
             optimize_stellar_model=True,
             optimize_stellar_params=True,
-            lr_model_init=1e-7,
-            lr_stars_init=1e-5,
+            lr_model_init=1e-6*nscale,
+            lr_stars_init=1e-4*nscale,
             batch_size=batch_size,
             n_epochs=n_epochs,
             var_update = ['atm','E','plx','xi'],
