@@ -15,73 +15,150 @@ from reproject import reproject_from_healpix
 from astropy_healpix import HEALPix
 
 
-def plot_mollweide(healpix_data, clabel=None, w=480, **kwargs):
+def plot_mollweide(healpix_data, *subplot_args, fig=None,
+                   w=480, input_frame='galactic', plot_frame='galactic',
+                   grid_kw=dict(), **kwargs):
+    coordsys,ctype0,ctype1 = {
+        'galactic': ('GAL', 'GLON-MOL', 'GLAT-MOL'),
+        'icrs':     ('EQU', 'RA---MOL', 'DEC--MOL')
+    }[plot_frame]
     target_header = dict(
         naxis=2,
         naxis1=w,
         naxis2=w//2,
-        ctype1='GLON-MOL',
+        ctype1=ctype0,
         crpix1=w//2+0.5,
         crval1=0.0,
         cdelt1=-0.675*480/w,
         cunit1='deg',
-        ctype2='GLAT-MOL',
+        ctype2=ctype1,
         crpix2=w//4+0.5,
         crval2=0.0,
         cdelt2=0.675*480/w,
         cunit2='deg',
-        coordsys='GAL'
+        coordsys=coordsys
     )
     wcs = WCS(target_header)
+    print(wcs)
 
     array, footprint = reproject_from_healpix(
-        (healpix_data, 'galactic'),
+        (healpix_data, input_frame),
         wcs, nested=True,
         shape_out=(w//2,w),
         order='nearest-neighbor'
     )
 
-    fig = plt.figure(figsize=(6,2.8))
+    if fig is None:
+        figsize = (6, 2.6)
+        fig = plt.figure(figsize=figsize, layout='tight')
+    
     ax = fig.add_subplot(
-        1,1,1, projection=wcs,
+        *subplot_args, projection=wcs,
         frame_class=EllipticalFrame
     )
     im = ax.imshow(array, **kwargs)
 
     pe = [
-        patheffects.Stroke(linewidth=1.5, foreground='white'),
+        patheffects.Stroke(linewidth=1.0, foreground='white', alpha=0.7),
         patheffects.Normal()
     ]
 
-    ax.coords.grid(color='gray', alpha=0.2)
-    ax.coords['glon'].set_ticklabel(color='k', path_effects=pe, fontsize=7)
-    ax.coords['glat'].set_ticklabel(color='k', path_effects=pe, fontsize=7)
-    ax.coords['glat'].set_ticklabel_position('v')
-    ax.coords['glon'].set_ticks_visible(False)
-    ax.coords['glat'].set_ticks_visible(False)
+    coord0,coord1 = {'galactic':('glon','glat'), 'icrs':('ra','dec')}[plot_frame]
+    kw = dict(color='gray', alpha=0.2)
+    kw.update(**grid_kw)
+    ax.coords.grid(**kw)
+    ax.coords[coord0].set_ticklabel(color='k', path_effects=pe, fontsize=7)
+    ax.coords[coord1].set_ticklabel(color='k', path_effects=pe, fontsize=7)
+    ax.coords[coord1].set_ticklabel_position('v')
+    ax.coords[coord0].set_ticks_visible(False)
+    ax.coords[coord1].set_ticks_visible(False)
 
-    cb = fig.colorbar(im, ax=ax, label=clabel)
+    return fig, ax, im
 
-    fig.subplots_adjust(
-        left=0.05, right=0.99,
-        bottom=0.05, top=0.95,
-        wspace=0.03
+
+def plot_tangent(healpix_data, *subplot_args, fig=None,
+                 center=(0.,0.), fov=(15.,15.), w=480,
+                 input_frame='galactic', plot_frame='galactic',
+                 grid_kw=dict(), **kwargs):
+    # Determine height (in pixels) of image, based on width and fov ratio
+    tan_th0 = np.tan(np.radians(fov[0]/2))
+    tan_th1 = np.tan(np.radians(fov[1]/2))
+    h = int(np.round(w * tan_th1 / tan_th0))
+    
+    coordsys,ctype0,ctype1 = {
+        'galactic': ('GAL', 'GLON-TAN', 'GLAT-TAN'),
+        'icrs':     ('EQU', 'RA---TAN', 'DEC--TAN')
+    }[plot_frame]
+    
+    target_header = dict(
+        naxis=2,
+        naxis1=w,
+        naxis2=h,
+        ctype1=ctype0,
+        crpix1=w//2+0.5,
+        crval1=center[0],
+        cdelt1=-np.degrees(tan_th0)/(0.5*w),
+        cunit1='deg',
+        ctype2=ctype1,
+        crpix2=h//2+0.5,
+        crval2=center[1],
+        cdelt2=np.degrees(tan_th1)/(0.5*h),
+        cunit2='deg',
+        coordsys=coordsys
+    )
+    wcs = WCS(target_header)
+    print(wcs)
+
+    array, footprint = reproject_from_healpix(
+        (healpix_data, input_frame),
+        wcs, nested=True,
+        shape_out=(w,h),
+        order='nearest-neighbor'
     )
 
-    return fig, ax
+    if fig is None:
+        figsize = (6, 2.6)
+        fig = plt.figure(figsize=figsize, layout='tight')
+    
+    ax = fig.add_subplot(*subplot_args, projection=wcs)
+    im = ax.imshow(array, **kwargs)
+
+    pe = [
+        patheffects.Stroke(linewidth=1.0, foreground='white', alpha=0.7),
+        patheffects.Normal()
+    ]
+
+    # coord0,coord1 = {'galactic':('glon','glat'), 'icrs':('ra','dec')}[plot_frame]
+    kw = dict(color='gray', alpha=0.2)
+    kw.update(**grid_kw)
+    ax.coords.grid(**kw)
+    # ax.coords[coord0].set_ticklabel(color='k', path_effects=pe, fontsize=7)
+    # ax.coords[coord1].set_ticklabel(color='k', path_effects=pe, fontsize=7)
+    # ax.coords[coord1].set_ticklabel_position('v')
+    # ax.coords[coord0].set_ticks_visible(False)
+    # ax.coords[coord1].set_ticks_visible(False)
+
+    return fig, ax, im
 
 
-def healpix_mean_map(lon, lat, data, nside):
+def healpix_mean_map(lon, lat, data, nside, weights=None):
     hp = HEALPix(nside=nside, order='nested')
     hpix_idx = hp.lonlat_to_healpix(lon, lat)
 
-    sum_in_pix = np.zeros(hp.npix, dtype='f8')
-    n_in_pix = np.zeros(hp.npix, dtype='u8')
-    np.add.at(sum_in_pix, hpix_idx, data)
-    np.add.at(n_in_pix, hpix_idx, 1)
-    sum_in_pix /= n_in_pix
+    sum_data = np.zeros(hp.npix, dtype='f8')
 
-    return sum_in_pix
+    if weights is None:
+        np.add.at(sum_data, hpix_idx, data)
+        sum_weight = np.zeros(hp.npix, dtype='u8')
+        np.add.at(sum_weight, hpix_idx, 1)
+    else:
+        np.add.at(sum_data, hpix_idx, data*weights)
+        sum_weight = np.zeros(hp.npix, dtype='f8')
+        np.add.at(sum_weight, hpix_idx, weights)
+
+    sum_data /= sum_weight
+
+    return sum_data
 
 
 def plot_corr(ax, x, y, x_lim=None, d_max=None,
