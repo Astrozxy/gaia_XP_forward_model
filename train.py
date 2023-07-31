@@ -2,6 +2,7 @@ import numpy as np
 
 import matplotlib.pyplot as plt
 from matplotlib.ticker import MultipleLocator, AutoMinorLocator
+from matplotlib.colors import Normalize, LogNorm
 
 from argparse import ArgumentParser
 from pathlib import Path
@@ -203,7 +204,8 @@ def train(data_fname, output_dir, stage=0, thin=1):
         # Generate GMM prior
         print('Generating Gaussian Mixture Model prior on stellar type ...')
         stellar_type_prior = GaussianMixtureModel(3, n_components=16)
-        stellar_type_prior.fit(d_train['stellar_type'])
+        n_prior_max = 1000000 # Use at most this many stars to learn GMM prior
+        stellar_type_prior.fit(d_train['stellar_type'][:n_prior_max])
         stellar_type_prior.save(full_fn('models/prior/gmm_prior'))
         print('  -> Plotting prior ...')
         plot_gmm_prior(stellar_type_prior, base_path=output_dir)
@@ -799,37 +801,54 @@ def plot_camd(d, color_key=None, color_dim=None, low_extinction=False):
 
     bprp = bprp[idx]
     g_absmag = g_absmag[idx]
-    c = d[color_key][idx]
-
-    if color_dim is not None:
-        c = c[:,color_dim]
 
     bprp_lim = (-1.0, 5.0)
     g_absmag_lim = (15., -5.5)
-    clim = plot_utils.choose_lim(c)
 
-    im = plot_utils.hist2d_reduce(
-        bprp, g_absmag, c,
-        ax=ax,
-        xlim=bprp_lim,
-        ylim=g_absmag_lim,
-        hist_kw=dict(bins=50),
-        imshow_kw=dict(vmin=clim[0],vmax=clim[1])
-    )
+    if color_key is None:
+        _,_,_,im = ax.hist2d(
+            bprp, g_absmag,
+            range=[sorted(bprp_lim),sorted(g_absmag_lim)],
+            bins=50,
+            norm=LogNorm()
+        )
+        ax.set_xlim(bprp_lim)
+        ax.set_ylim(g_absmag_lim)
+        clabel = r'$\mathrm{density}$'
+    else:
+        c = d[color_key][idx]
 
+        if color_dim is not None:
+            c = c[:,color_dim]
+        clim = plot_utils.choose_lim(c)
+
+        im = plot_utils.hist2d_reduce(
+            bprp, g_absmag, c,
+            ax=ax,
+            xlim=bprp_lim,
+            ylim=g_absmag_lim,
+            hist_kw=dict(bins=50),
+            imshow_kw=dict(vmin=clim[0],vmax=clim[1])
+        )
+
+        clabel = color_key.replace(r'_', r'\_')
+        if color_dim is not None:
+            clabel = rf'{clabel}\_{color_dim}'
+        clabel = rf'$\mathtt{{{clabel}}}$'
+
+    cb = fig.colorbar(im, ax=ax, label=clabel)
     ax.set_xlabel(r'$BP-RP$')
     ax.set_ylabel(r'$m_G + 5\log_{10}\hat{\varpi} - 10$')
-
-    clabel = color_key.replace(r'_', r'\_')
-    if color_dim is not None:
-        clabel = rf'{clabel}\_{color_dim}'
-    clabel = rf'$\mathtt{{{clabel}}}$'
-    cb = fig.colorbar(im, ax=ax, label=clabel)
 
     return fig,ax
         
 
 def plot_training_data(d, output_dir=''):
+    fig,ax = plot_camd(d)
+    fn = os.path.join(output_dir, 'plots', f'camd_density')
+    fig.savefig(fn)
+    plt.close(fig)
+
     n_params = d['stellar_type'].shape[1]
     for key in ('stellar_type','stellar_type_err'):
         for dim in range(n_params):
