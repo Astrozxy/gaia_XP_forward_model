@@ -150,8 +150,11 @@ def extract_fluxes(fid, match_source_ids=None, thin=1):
     E_fname = f'data/xp_dustmap_match/xp_reddening_match_{fid}.h5'
     with h5py.File(E_fname, 'r') as f:
         d_E = {k:f[k][:] for k in f.keys()}
-    idx,idx_insert_E = get_match_indices(d_E['gdr3_source_id'], gdr3_source_id)
-    d_E = {k:d_E[k][idx] for k in d_E}
+    idx_src_E,idx_insert_E = get_match_indices(
+        d_E['gdr3_source_id'],
+        gdr3_source_id
+    )
+    d_E = {k:d_E[k][idx_src_E] for k in d_E}
     coords_E = SkyCoord(
         d_meta['ra'][idx_insert_E],
         d_meta['dec'][idx_insert_E],
@@ -160,8 +163,10 @@ def extract_fluxes(fid, match_source_ids=None, thin=1):
     n_noE = n - len(idx_insert_E)
     logging.info(f'{fid}: {n_noE} have no reddening ({n_noE/n:.3%}).')
     # Default (when no good extinction measurement present): SFD +- SFD
-    stellar_ext = d_E['E_mean_sfd']
-    stellar_ext_err = d_E['E_mean_sfd']
+    stellar_ext = np.full(n, np.nan)
+    stellar_ext_err = np.full(n, np.nan)
+    stellar_ext[idx_insert_E] = d_E['E_mean_sfd']
+    stellar_ext_err[idx_insert_E] = d_E['E_mean_sfd']
     stellar_ext_source = np.full(n, '', dtype='S12')
     # Order or priority: Bayestar, SFD (only above plane), nothing
     idx = np.isfinite(d_E['E_mean_bayestar'])

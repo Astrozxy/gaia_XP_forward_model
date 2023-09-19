@@ -2,6 +2,7 @@ import numpy as np
 
 import matplotlib.pyplot as plt
 from matplotlib.ticker import MultipleLocator, AutoMinorLocator
+from matplotlib.colors import Normalize, LogNorm
 
 from argparse import ArgumentParser
 from pathlib import Path
@@ -19,8 +20,9 @@ from model import GaussianMixtureModel, FluxModel, chi_band, gaussian_prior, \
                   plot_gmm_prior, assign_variable_padded, corr_matrix, \
                   calc_stellar_fisher_hessian, load_data, save_as_h5, load_h5
 import model
+import plot_utils
 
-nscale=2.
+nscale = 2.
 
 def load_training_data(fname, validation_frac=0.2, seed=1, thin=1):
     # Load training data
@@ -190,6 +192,8 @@ def train(data_fname, output_dir, stage=0, thin=1):
         )
         n_train, n_val = [len(d['plx']) for d in (d_train,d_val)]
         print(f'Loaded {n_train} ({n_val}) training (validation) sources.')
+
+        plot_training_data(d_train, output_dir=output_dir)
         
         # Initial guess of xi
         d_train['xi'] = np.zeros(n_train, dtype='f4')
@@ -201,7 +205,8 @@ def train(data_fname, output_dir, stage=0, thin=1):
         # Generate GMM prior
         print('Generating Gaussian Mixture Model prior on stellar type ...')
         stellar_type_prior = GaussianMixtureModel(3, n_components=16)
-        stellar_type_prior.fit(d_train['stellar_type'])
+        n_prior_max = 1000000 # Use at most this many stars to learn GMM prior
+        stellar_type_prior.fit(d_train['stellar_type'][:n_prior_max])
         stellar_type_prior.save(full_fn('models/prior/gmm_prior'))
         print('  -> Plotting prior ...')
         plot_gmm_prior(stellar_type_prior, base_path=output_dir)
@@ -259,8 +264,8 @@ def train(data_fname, output_dir, stage=0, thin=1):
             input_zp=np.median(d_train['stellar_type'],axis=0),
             input_scale=0.5*(p_high-p_low),
             hidden_size=64,
-            l2=0.01, l2_ext_curve=10.
-         )   
+            l2=1., l2_ext_curve=10.
+        )   
         
         # First, train the model with stars with good measurements,
         # with fixed slope of ext_curve
@@ -600,8 +605,8 @@ def train(data_fname, output_dir, stage=0, thin=1):
             lr_stars_init=1e-5*nscale,
             batch_size=batch_size,
             n_epochs=n_epochs,
-            var_update = ['atm','E','plx','xi'],
-            model_update = ['stellar_model', 'ext_curve_w', 'ext_curve_b'],
+            var_update=['atm','E','plx','xi'],
+            model_update=['stellar_model', 'ext_curve_w', 'ext_curve_b'],
         )
 
         print('Plotting stellar model ...')
@@ -612,6 +617,14 @@ def train(data_fname, output_dir, stage=0, thin=1):
         
         fig,_ = model.plot_extinction_curve(stellar_model, show_variation=True)
         fig.savefig(full_fn('plots/extinction_curve_step2'))
+        plt.close(fig)
+
+        fig,_ = model.plot_RV_histogram(stellar_model, d_train)
+        fig.savefig(full_fn('plots/RV_histogram_step2'))
+        plt.close(fig)
+        
+        fig,_ = model.plot_RV_skymap(stellar_model, d_train)
+        fig.savefig(full_fn('plots/RV_skymap_step2'))
         plt.close(fig)
         
         save_as_h5(d_train, full_fn('data/dtrain_Rv_intermediate_0.h5'))
@@ -725,6 +738,14 @@ def train(data_fname, output_dir, stage=0, thin=1):
         fig,_ = model.plot_extinction_curve(stellar_model, show_variation=True)
         fig.savefig(full_fn('plots/extinction_curve_step3'))
         plt.close(fig)
+
+        fig,_ = model.plot_RV_histogram(stellar_model, d_train)
+        fig.savefig(full_fn('plots/RV_histogram_step3'))
+        plt.close(fig)
+        
+        fig,_ = model.plot_RV_skymap(stellar_model, d_train)
+        fig.savefig(full_fn('plots/RV_skymap_step3'))
+        plt.close(fig)
         
         stellar_model.save(full_fn('models/flux/xp_spectrum_model_final_Rv'))
         save_as_h5(ret, full_fn('hist_loss/final_Rv.h5'))
@@ -760,7 +781,98 @@ def train(data_fname, output_dir, stage=0, thin=1):
         save_as_h5(d_val, full_fn('data/dval_Rv_final.h5'))
         
         return 0
+
+
+def plot_camd(d, color_key=None, color_dim=None, low_extinction=False):
+    fig,ax = plt.subplots(figsize=(6,6), layout='constrained')
+    
+    # Calculate M_G and BP-RP
+    zp_g,zp_bp,zp_rp = (25.6884, 25.3514, 24.7619)
+    m_g = -2.5*np.log10(d['phot_g_mean_flux']) + zp_g
+    m_bp = -2.5*np.log10(d['phot_bp_mean_flux']) + zp_bp
+    m_rp = -2.5*np.log10(d['phot_rp_mean_flux']) + zp_rp
+    bprp = m_bp - m_rp
+    g_absmag = m_g + 5*np.log10(d['plx']) - 10.
+
+    # Only plot stars with well determined Gaia parallaxes
+    idx = (d['plx'] / d['plx_err'] > 3.)
+
+    # Additionally require decent photometry
+    for b in ('g','bp','rp'):
+        idx &= (d[f'phot_{b}_mean_flux']/d[f'phot_{b}_mean_flux_error']>5)
+
+    # Select low-extinction stars?
+    if low_extinction:
+        idx &= (d['stellar_ext'] + d['stellar_ext_err'] < 0.3)
+
+    bprp = bprp[idx]
+    g_absmag = g_absmag[idx]
+
+    bprp_lim = (-1.0, 5.0)
+    g_absmag_lim = (15., -5.5)
+
+    if color_key is None:
+        _,_,_,im = ax.hist2d(
+            bprp, g_absmag,
+            range=[sorted(bprp_lim),sorted(g_absmag_lim)],
+            bins=50,
+            norm=LogNorm()
+        )
+        ax.set_xlim(bprp_lim)
+        ax.set_ylim(g_absmag_lim)
+        clabel = r'$\mathrm{density}$'
+    else:
+        c = d[color_key][idx]
+
+        if color_dim is not None:
+            c = c[:,color_dim]
+        clim = plot_utils.choose_lim(c)
+
+        im = plot_utils.hist2d_reduce(
+            bprp, g_absmag, c,
+            ax=ax,
+            xlim=bprp_lim,
+            ylim=g_absmag_lim,
+            hist_kw=dict(bins=50),
+            imshow_kw=dict(vmin=clim[0],vmax=clim[1])
+        )
+
+        clabel = color_key.replace(r'_', r'\_')
+        if color_dim is not None:
+            clabel = rf'{clabel}\_{color_dim}'
+        clabel = rf'$\mathtt{{{clabel}}}$'
+
+    cb = fig.colorbar(im, ax=ax, label=clabel)
+    ax.set_xlabel(r'$BP-RP$')
+    ax.set_ylabel(r'$m_G + 5\log_{10}\hat{\varpi} - 10$')
+
+    return fig,ax
         
+
+def plot_training_data(d, output_dir=''):
+    fig,ax = plot_camd(d)
+    fn = os.path.join(output_dir, 'plots', f'camd_density')
+    fig.savefig(fn)
+    plt.close(fig)
+
+    n_params = d['stellar_type'].shape[1]
+    for key in ('stellar_type','stellar_type_err'):
+        for dim in range(n_params):
+            print(f'Plotting {key}_{dim} ...')
+            fig,ax = plot_camd(
+                d, color_key=key, color_dim=dim,
+                low_extinction=True
+            )
+            fn = os.path.join(output_dir, 'plots', f'camd_{key}_{dim}')
+            fig.savefig(fn)
+            plt.close(fig)
+
+    print(f'Plotting extinctions ...')
+    fig,ax = plot_camd(d, color_key='stellar_ext')
+    fn = os.path.join(output_dir, 'plots', 'camd_extinction')
+    fig.savefig(fn)
+    plt.close(fig)
+
 
 def main():
     parser = ArgumentParser(

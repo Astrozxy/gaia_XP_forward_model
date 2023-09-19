@@ -1276,23 +1276,56 @@ def plot_stellar_model(flux_model, track,
     return fig, ax
 
 
-def plot_extinction_curve(flux_model, show_variation=True):
-    sample_wavelengths = flux_model.get_sample_wavelengths()
-    if show_variation:
-        xi = np.linspace(-0.5, 0.5, 11, dtype='f4')
-    else:
-        xi = np.array([0.], dtype='f4')
+def quick_RV_estimate(flux_model, xi, return_curve=False):
+    """
+    Returns a quick-and-dirty estimate of R(V) for the given values of
+    xi. A correct calculation of R(V) requires a source spectrum and
+    a full bandpass response function. This function simply uses the
+    extinction curve at the effective wavelengths of the B and V filters.
+    This is a useful estimate for making quick plots, but should be
+    avoided when a precise value of R(V) is required for a particular source.
+
+    Inputs:
+      flux_model (FluxModel): The stellar/extinction model to use.
+      xi (float or array of floats): The values of xi at which to calculate
+          R(V).
+
+      return_curve (Optional[bool]): If `True`, the full extinction curve will
+          also be returned.
+
+    Returns:
+      Approximate R(V) values at the given values of xi. If `return_true` is
+      `True`, then the full extinction curve will also be returned.
+    """
+    # Calculate extinction curve at given values of xi
+    xi = np.array(xi).astype('f4')
     R = np.exp(flux_model.predict_ln_ext_curve(xi).numpy())
 
-    lam_BV = np.array([431.8, 533.5])
-
+    # Interpolate extinction curve to effective wavelengths of B and V
+    lam_BV = np.array([431.8, 533.5]) # in nm
+    sample_wavelengths = flux_model.get_sample_wavelengths()
     idx_BV = np.searchsorted(sample_wavelengths, lam_BV)
     lam1 = sample_wavelengths[idx_BV]
     lam0 = sample_wavelengths[idx_BV-1]
-    a1 = (lam_BV - lam0) / (lam1 - lam0)
+    a1 = (lam_BV - lam0) / (lam1 - lam0) # Linear interpolation coefficient
 
     R_BV = (1-a1)*R[:,idx_BV-1] + a1*R[:,idx_BV]
     R_V = R_BV[:,1] / (R_BV[:,0] - R_BV[:,1])
+
+    if return_curve:
+        return R_V, R
+
+    return R_V
+
+
+def plot_extinction_curve(flux_model, show_variation=True):
+    sample_wavelengths = flux_model.get_sample_wavelengths()
+    if show_variation:
+        xi = np.linspace(-0.75, 0.75, 11, dtype='f4')
+    else:
+        xi = np.array([0.], dtype='f4')
+
+    R_V,R_lam = quick_RV_estimate(flux_model, xi, return_curve=True)
 
     fig = plt.figure(figsize=(6,4), layout='constrained')
     ax = fig.add_subplot(1,1,1)
@@ -1301,7 +1334,7 @@ def plot_extinction_curve(flux_model, show_variation=True):
     cmap = plt.get_cmap('coolwarm_r')
     c = cmap(norm(R_V))
 
-    for xi_i,R_i,RV_i,cc in zip(xi,R,R_V,c):
+    for xi_i,R_i,RV_i,cc in zip(xi,R_lam,R_V,c):
         ax.semilogx(sample_wavelengths, R_i, c=cc)
 
     cb = fig.colorbar(
@@ -1317,6 +1350,65 @@ def plot_extinction_curve(flux_model, show_variation=True):
     ax.set_xlabel(r'$\lambda\ \left(\mathrm{nm}\right)$')
     ax.set_ylabel(r'$R_{\lambda}\ \left(\mathrm{mag}\right)$')
     
+    return fig, ax
+
+
+def plot_RV_histogram(flux_model, data):
+    RV = quick_RV_estimate(flux_model, data['xi_est'])
+
+    idx = (data['stellar_ext_est'] > 0.1)
+
+    fig,ax = plt.subplots(1, 1, figsize=(6,5))
+
+    kw = dict(histtype='step', range=(1.,9.), bins=100, log=True, alpha=0.8)
+    ax.hist(RV[idx], label=r'$E > 0.1$', **kw)
+    ax.hist(RV[~idx], label=r'$E < 0.1$', **kw)
+
+    ax.legend(loc='upper right')
+    ax.set_xlabel(r'$R(V)$')
+
+    ax.xaxis.set_minor_locator(ticker.AutoMinorLocator())
+    ax.yaxis.set_minor_locator(ticker.AutoMinorLocator())
+    ax.grid(True, which='major', alpha=0.2)
+    ax.grid(True, which='minor', alpha=0.05)
+
+    return fig, ax
+
+
+def plot_RV_skymap(flux_model, data, nside=16):
+    RV = quick_RV_estimate(flux_model, data['xi_est'])
+
+    idx = (RV > 0.) & (RV < 10.) & (data['stellar_ext_est'] < 10.)
+
+    RV_healpix_map = plot_utils.healpix_mean_map(
+        data['ra'][idx]*units.deg,
+        data['dec'][idx]*units.deg,
+        RV[idx],
+        nside,
+        weights=data['stellar_ext_est'][idx]
+    )
+    
+    fig = plt.figure(figsize=(6,3.5), layout='constrained')
+
+    _,ax,im = plot_utils.plot_mollweide(
+        RV_healpix_map,
+        w=2000,
+        fig=fig,
+        input_frame='icrs',
+        plot_frame='galactic',
+        cmap='coolwarm_r',
+        vmin=2.1, vmax=4.1
+    )
+
+    cb = fig.colorbar(
+        im, ax=ax,
+        label=r'$R(V)$',
+        location='bottom',
+        shrink=0.75,
+        pad=0.02,
+        aspect=40
+    )
+
     return fig, ax
 
 

@@ -235,7 +235,7 @@ def main():
     # Calculate the clipping limit of ln_prior
     samples = stellar_type_prior.sample(64*1024)
     sample_ln_prior = stellar_type_prior.ln_prob(samples)
-    ln_prior_clip = np.percentile(sample_ln_prior, 0.001)
+    ln_prior_clip = np.percentile(sample_ln_prior, 0.1)
     samples = 0
 
     # Loop over input files, optimizing all stars in each file
@@ -284,7 +284,6 @@ def main():
                 kw['n_steps'] = 1024*12
                 kw['reduce_lr_every'] = 1024*4
                 kw['lr_init'] = 1e-5 / 2**(2*(k-1))
-                kw['']
 
             print(f'Optimizing stellar parameters with {kw["optimizer"]} ...')
             optimize_stellar_params(stellar_model, d, **kw)
