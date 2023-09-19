@@ -81,7 +81,7 @@ def healpix_mean_map(lon, lat, data, nside):
     np.add.at(n_in_pix, hpix_idx, 1)
     sum_in_pix /= n_in_pix
 
-    return sum_in_pix
+    return sum_in_pix, n_in_pix
 
 
 def plot_corr(ax, x, y, x_lim=None, d_max=None,
