@@ -136,7 +136,9 @@ def save_opt_stellar_params(data, fname, overwrite=False):
         'stellar_params_icov',
         'stellar_params_cov',
         'stellar_params_icov_eival_min',
-        'rchi2_opt'
+        'rchi2_opt',
+        'plx','plx_err',
+        'ln_prob'
     )
     kw = dict(compression='lzf', chunks=True)
     mode = 'w' if overwrite else 'a'
@@ -228,14 +230,14 @@ def main():
 
     # Load stellar flux model and stellar type priors
     print('Loading trained flux model ...')
-    stellar_model = FluxModel.load('models/flux/xp_spectrum_model_final_Rv-1')
+    stellar_model = FluxModel.load('data/output01/models/flux/xp_spectrum_model_final_Rv-1')
     print('Loading Gaussian Mixture Model prior on stellar type ...')
     stellar_type_prior = GaussianMixtureModel.load('models/prior/gmm_prior-1')
     
     # Calculate the clipping limit of ln_prior
-    samples = stellar_type_prior.sample(64*1024)
+    samples = stellar_type_prior.sample(1024*1024)
     sample_ln_prior = stellar_type_prior.ln_prob(samples)
-    ln_prior_clip = np.percentile(sample_ln_prior, 0.001)
+    ln_prior_clip = np.percentile(sample_ln_prior, 0.0001).astype('f4')
     samples = 0
 
     # Loop over input files, optimizing all stars in each file
@@ -266,7 +268,7 @@ def main():
             lr_init=0.01,
             optimizer='adam',
             batch_size=min([n_stars, 1024*32]),
-            n_steps=1024*8,
+            n_steps=1024*12,
             reduce_lr_every=128*6,
             ln_prior_clip=ln_prior_clip,
             use_prior=stellar_type_prior
@@ -284,14 +286,14 @@ def main():
                 kw['n_steps'] = 1024*12
                 kw['reduce_lr_every'] = 1024*4
                 kw['lr_init'] = 1e-5 / 2**(2*(k-1))
-                kw['']
-
+                
             print(f'Optimizing stellar parameters with {kw["optimizer"]} ...')
             optimize_stellar_params(stellar_model, d, **kw)
 
             print('Estimating uncertainties on stellar parameters ...')
             calc_stellar_fisher_hessian(
                 stellar_model, d,
+                ln_prior_clip=ln_prior_clip,
                 gmm=stellar_type_prior,
                 batch_size=1024
             )
@@ -338,6 +340,10 @@ def main():
         # Calculate standard covariance matrices
         print('Calculate standard covariance matrices ...')
         calc_param_cov(d)
+
+        # Calculate prior
+        print('Calculating prior')
+        d['ln_prob']=stellar_type_prior.ln_prob(d['stellar_params_est'][:,:3])
 
         # Save updated stellar parameters, as well an uncertainty estimates
         print('Saving results ...')

@@ -126,13 +126,7 @@ class FluxModel(snt.Module):
         self._ext_bias = tf.Variable(
             tf.zeros((1, self._n_output)),
             name='ext_bias'
-        )
-        
-        self._grey_term = tf.Variable(
-            0.,
-            name='grey_term',
-            dtype=tf.float32,
-        )        
+        )   
 
         # Initialize neural network        
         self.predict_intrinsic_ln_flux(tf.zeros([1,n_input]))
@@ -175,7 +169,7 @@ class FluxModel(snt.Module):
         """
         # Run xi through the neural net
         x = tf.expand_dims(xi, 1) # shape = (star, 1)
-        ln_ext = (self._ext_slope-self._grey_term)*x + self._ext_bias # shape = (star, wavelength)
+        ln_ext = self._ext_slope*tf.math.tanh(x) + self._ext_bias # shape = (star, wavelength)
         return ln_ext
 
     def predict_obs_flux(self, stellar_type, xi,
@@ -313,7 +307,7 @@ def grads_stellar_model(stellar_model,
     chi2_factor = chi2_turnover * stellar_model._n_output
 
     # Only want gradients of stellar model parameters and extinction curve
-    trainable_var = ['flux_model/grey_term:0',]
+    trainable_var = []
     if 'stellar_model' in model_update:
             trainable_var += [ f'flux_model/hidden_0/w:{i}'
                 for i in range(stellar_model._n_hidden)
@@ -533,7 +527,7 @@ def train_stellar_model(stellar_model,
         [int(n_batches*k/n_drops) for k in range(1,n_drops)],
         [lr_model_init*(0.1**k) for k in range(n_drops)]
     )
-    opt_model = keras.optimizers.SGD(learning_rate=lr_model, momentum=0.5)
+    opt_model = keras.optimizers.SGD(learning_rate=lr_model, momentum=0.9)
     #opt_model = keras.optimizers.Adam(learning_rate=1e-4)
 
     @tf.function
@@ -1519,7 +1513,7 @@ def optimize_stellar_params(flux_model, data,
                             batch_size=4096,
                             optimizer='adam',
                             use_prior=None,
-                            ln_prior_clip=-12.,
+                            ln_prior_clip=-15.,
                             optimize_subset=None):
     if 'stellar_type' in data:
         n_type = data['stellar_type'].shape[1]
@@ -1586,7 +1580,7 @@ def optimize_stellar_params(flux_model, data,
             )
         elif isinstance(use_pr, GaussianMixtureModel):
             print('Using prior: GMM')
-            prior_type = -2.*ln_prob_clipped(
+            prior_type = -2.*ln_prior_clipped(
                 use_prior,
                 st_type_b,
                 ln_prior_clip
@@ -1774,6 +1768,7 @@ def assign_variable_padded(var, value, fill=0):
 
 
 def calc_stellar_fisher_hessian(stellar_model, data, gmm=None,
+                                ln_prior_clip=-15.,
                                 batch_size=1024, ignore_wl=None):
     n_sources,st_type_dim = data['stellar_type_est'].shape
     n_wl = len(stellar_model.get_sample_wavelengths())
@@ -1861,7 +1856,6 @@ def calc_stellar_fisher_hessian(stellar_model, data, gmm=None,
             with tf.GradientTape(watch_accessed_variables=False,
                                  persistent=True) as g1:
                 g1.watch(theta)
-
                 t,xi,ext,plx = tf.split(theta, [3,1,1,1], axis=1)
                 xi = tf.squeeze(xi, axis=1)
                 ext = tf.squeeze(ext, axis=1)
@@ -1875,7 +1869,12 @@ def calc_stellar_fisher_hessian(stellar_model, data, gmm=None,
 
                 # Calculate GMM prior for each star
                 if gmm is not None:
-                    ln_prior_gmm = gmm.ln_prob(t)
+                    #ln_prior_gmm = gmm.ln_prob(t)
+                    ln_prior_gmm = ln_prior_clipped(
+                            gmm,
+                            t,
+                            ln_prior_clip
+                        )
 
             # Calculate d(chi^2)/d(variables). Separate gradient per star.
             grads = g1.gradient(chi2, theta)

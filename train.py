@@ -20,13 +20,14 @@ from model import GaussianMixtureModel, FluxModel, chi_band, gaussian_prior, \
                   calc_stellar_fisher_hessian, load_data, save_as_h5, load_h5
 import model
 
-nscale=2.
+nscale=1.
 
 def load_training_data(fname, validation_frac=0.2, seed=1, thin=1):
     # Load training data
     with h5py.File(fname, 'r') as f:
         d = {key:f[key][:][::thin] for key in f.keys()}
-        sample_wavelengths = f['flux'].attrs['sample_wavelengths'][:]
+        #sample_wavelengths = f['flux'].attrs['sample_wavelengths'][:]
+        sample_wavelengths = np.load('wl.npy').astype('f4')
 
     # Ensure that certain fields are in float32 format
     f4_keys = [
@@ -130,7 +131,7 @@ def plot_param_histograms_1d(stellar_type, weights, title, fname):
     plt.close(fig)
     
     
-def weigh_prior(stellar_type_prior, d_train):
+def weigh_prior(stellar_type_prior, d_train, scale=1.):
     all_ln_prior = batch_apply_tf(
         stellar_type_prior.ln_prob,
         1024,
@@ -139,18 +140,17 @@ def weigh_prior(stellar_type_prior, d_train):
         progress=True,
         numpy=True
     )
-    all_prior = np.exp(all_ln_prior)
+    all_prior = np.exp(scale*all_ln_prior)
     all_prior /= np.max(all_prior)
         
     # Weigh stars for better representation
-    #weights_per_star = np.exp(-d_train['stellar_type'][:,1]/2.)
     max_upsampling = 100.
     weights_per_star = (1./(all_prior+1/max_upsampling)).astype('f4')
     
     return weights_per_star
 
 
-def train(data_fname, output_dir, stage=0, thin=1):
+def train(data_fname, output_dir, stage=0, thin=1, E_low=0.1):
     '''
     Stage 0: Train the stellar model, using universal extinction curve.
     Stage 1: Train the extinction model with hqlE stars, using initial guess of 
@@ -161,7 +161,7 @@ def train(data_fname, output_dir, stage=0, thin=1):
 
     # General training parameters
     n_epochs = 256
-    batch_size = 1024
+    batch_size = 512
     n_bins = 100
     
     loss_hist = []
@@ -259,7 +259,7 @@ def train(data_fname, output_dir, stage=0, thin=1):
             input_zp=np.median(d_train['stellar_type'],axis=0),
             input_scale=0.5*(p_high-p_low),
             hidden_size=64,
-            l2=0.01, l2_ext_curve=10.
+            l2=0.5, l2_ext_curve=2.
          )   
         
         # First, train the model with stars with good measurements,
@@ -452,11 +452,11 @@ def train(data_fname, output_dir, stage=0, thin=1):
         
         # Initial weight of stars: equal
         weights_per_star = np.ones(len(d_train["plx"]), dtype='f4')
-        
         idx_hq = np.load(full_fn('index/idx_good_wo_Rv.npy'))
 
         # Optimize the params of high-quality stars 
         #n_epochs = 128
+        
         print('Optimizing params of hq stars')
         ret = train_stellar_model(
             stellar_model,
@@ -474,7 +474,8 @@ def train(data_fname, output_dir, stage=0, thin=1):
         save_as_h5(d_train, full_fn('data/dtrain_final_wo_Rv_optimized.h5'))
         d_train = load_h5(full_fn('data/dtrain_final_wo_Rv_optimized.h5'))
         
-        idx_hq_large_E = idx_hq & (d_train['stellar_ext_est']>0.1)
+        large_E = (d_train['stellar_ext_est']>E_low)
+        idx_hq_large_E = idx_hq & large_E
         pct_use = np.mean(idx_hq_large_E)
         print(f'Learning (xi, E, plx) for {pct_use:.3%} of sources.')
 
@@ -494,14 +495,14 @@ def train(data_fname, output_dir, stage=0, thin=1):
             stellar_model,
             d_train,
             weights_per_star,
-            idx_train=np.where(idx_hq_large_E)[0],
+            #idx_train=np.where(idx_hq_large_E)[0],
             optimize_stellar_model=False,
             optimize_stellar_params=True,
             #lr_model_init=1e-7,
             #lr_stars_init=1e-5,        
             batch_size=batch_size,
             n_epochs=n_epochs,
-            var_update=['E', 'plx', 'xi'],
+            var_update=['atm', 'E', 'plx', 'xi'],
         )
         
         weights_per_star = down_sample_weighing( 
@@ -532,11 +533,11 @@ def train(data_fname, output_dir, stage=0, thin=1):
             idx_train=np.where(idx_hq_large_E)[0],
             optimize_stellar_model=True,
             optimize_stellar_params=True,
-            #lr_model_init=1e-7,
-            #lr_stars_init=1e-5,
+            lr_model_init=1e-5,
+            lr_stars_init=1e-5,
             batch_size=batch_size,
             n_epochs=n_epochs,
-            var_update=['E', 'plx', 'xi'],
+            var_update=['E', 'xi'],
             model_update=['ext_curve_w'],
         ) 
         
@@ -547,17 +548,17 @@ def train(data_fname, output_dir, stage=0, thin=1):
             idx_train=np.where(idx_hq_large_E)[0],
             optimize_stellar_model=True,
             optimize_stellar_params=True,
-            lr_model_init=1e-7*nscale,
-            lr_stars_init=1e-5*nscale,
+            lr_model_init=1e-6,
+            lr_stars_init=1e-6,
             batch_size=batch_size,
             n_epochs=n_epochs,
-            var_update=['E', 'plx', 'xi'],
+            var_update=['E', 'xi'],
             model_update=['ext_curve_w', 'ext_curve_b'],
         ) 
         
         # TODO: Plot extinction curve here
 
-        np.save(full_fn('index/idx_with_Rv_good.npy'), idx_hq_large_E)
+        np.save(full_fn('index/idx_hq.npy'), idx_hq)
         # Save initial guess of xi
         save_as_h5(d_train, full_fn('data/dtrain_Rv_initial.h5'))
         save_as_h5(ret, full_fn('hist_loss/Rv_initial.h5'))
@@ -565,7 +566,7 @@ def train(data_fname, output_dir, stage=0, thin=1):
         
     if stage<3:
         
-        #n_epochs = 128
+        n_epochs = 256
         
         stellar_model = FluxModel.load(
             full_fn('models/flux/xp_spectrum_model_initial_Rv-1')
@@ -573,7 +574,8 @@ def train(data_fname, output_dir, stage=0, thin=1):
         d_train = load_h5(full_fn('data/dtrain_Rv_initial.h5'))
         d_val = load_h5(full_fn('data/d_val.h5'))
 
-        idx_hq = np.load(full_fn('index/idx_good_wo_Rv.npy')) 
+        idx_hq = np.load(full_fn('index/idx_hq.npy')) 
+        #idx_large_E = (d_train['stellar_ext_est']>0.2)
         
         stellar_type_prior = GaussianMixtureModel.load(
             full_fn('models/prior/gmm_prior-1')
@@ -596,8 +598,8 @@ def train(data_fname, output_dir, stage=0, thin=1):
             idx_train=np.where(idx_hq)[0],
             optimize_stellar_model=True,
             optimize_stellar_params=True,
-            lr_model_init=1e-7*nscale,
-            lr_stars_init=1e-5*nscale,
+            lr_model_init=1e-6,
+            lr_stars_init=1e-6,
             batch_size=batch_size,
             n_epochs=n_epochs,
             var_update = ['atm','E','plx','xi'],
@@ -625,18 +627,22 @@ def train(data_fname, output_dir, stage=0, thin=1):
         stellar_model = FluxModel.load(
             full_fn('models/flux/xp_spectrum_model_intermediate_Rv-1')
         )
-        
+        stellar_type_prior = GaussianMixtureModel.load(
+            full_fn('models/prior/gmm_prior-1')
+        )  
         d_train = load_h5(full_fn('data/dtrain_Rv_intermediate_0.h5'))
         d_val = load_h5(full_fn('data/d_val.h5'))
         atm_tracks = model.load_stellar_type_tracks(
             full_fn('models/prior/tracks.h5')
         )
+        #idx_hq = np.load(full_fn('index/idx_hq.npy')) 
      
         # Optimize all stellar params, in order to pick up 
         # stars that were rejected due to extinction variation law
         
-        #n_epochs = 128
-        
+        n_epochs = 512
+        weights_per_star = np.ones(d_train['stellar_type'].shape[0]).astype('float32')
+
         ret = train_stellar_model(
             stellar_model,
             d_train,
@@ -708,13 +714,31 @@ def train(data_fname, output_dir, stage=0, thin=1):
             idx_train=np.where(idx_final_train)[0],
             optimize_stellar_model=True,
             optimize_stellar_params=True,
-            lr_model_init=1e-6*nscale,
-            lr_stars_init=1e-4*nscale,
+            #lr_model_init=1e-5,
+            #lr_stars_init=1e-4,
             batch_size=batch_size,
             n_epochs=n_epochs,
-            var_update = ['atm','E','plx','xi'],
-            model_update = ['stellar_model', 'ext_curve_w', 'ext_curve_b'],
+            # Freeze xi when training with all stars (not necessarily having high E)
+            var_update = ['atm','E','plx'],
+            model_update = ['stellar_model', 'ext_curve_b'], 
         )
+
+        ret = train_stellar_model(
+            stellar_model,
+            d_train,
+            weights_per_star,
+            idx_train=np.where(idx_final_train)[0],
+            optimize_stellar_model=True,
+            optimize_stellar_params=True,
+            lr_model_init=1e-6,
+            lr_stars_init=1e-6,
+            batch_size=batch_size,
+            n_epochs=n_epochs,
+            # Freeze xi when training with all stars (not necessarily having high E)
+            var_update = ['atm','E','plx'],
+            model_update = ['stellar_model', 'ext_curve_b'],
+        )
+
         
         print('Plotting stellar model ...')
         for i,track in enumerate(atm_tracks):
@@ -791,9 +815,15 @@ def main():
         default=1,
         help='Only use every Nth star in the training set.'
     )
+    parser.add_argument(
+        '--E_low',
+        type=float,
+        default=0.1,
+        help='Lower limit of extinction for ext curve variation.'
+    )
+    
     args = parser.parse_args()
-
-    train(args.input, args.output_dir, stage=args.stage, thin=args.thin)
+    train(args.input, args.output_dir, stage=args.stage, thin=args.thin, E_low=args.E_low)
 
     return 0
 
