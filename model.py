@@ -127,6 +127,12 @@ class FluxModel(snt.Module):
             tf.zeros((1, self._n_output)),
             name='ext_bias'
         )
+        
+        self._grey_term = tf.Variable(
+            0.,
+            name='grey_term',
+            dtype=tf.float32,
+        )        
 
         # Initialize neural network        
         self.predict_intrinsic_ln_flux(tf.zeros([1,n_input]))
@@ -135,7 +141,7 @@ class FluxModel(snt.Module):
         # Initial guess of the extinction curve
         R0_guess = np.log(2 * (sample_wavelengths/550.)**(-1.5))
         R0_guess = R0_guess.astype('float32')
-        R1_guess = np.clip((sample_wavelengths-550.)/(992.-392.), -1., 1.)
+        R1_guess = np.clip((sample_wavelengths-550.)/(992.-392.), -0.5, 0.5)
         R1_guess = R1_guess.astype('float32')
         
         self._ext_bias.assign(R0_guess.reshape(1,-1))
@@ -144,6 +150,8 @@ class FluxModel(snt.Module):
         # Count the total number of weights
         self._n_flux_weights = sum([int(tf.size(l.w)) for l in self._layers])   
         self._n_ext_weights = int(tf.size(self._ext_slope))
+        
+
 
     def predict_intrinsic_ln_flux(self, stellar_type):
         """
@@ -167,7 +175,7 @@ class FluxModel(snt.Module):
         """
         # Run xi through the neural net
         x = tf.expand_dims(xi, 1) # shape = (star, 1)
-        ln_ext = self._ext_slope*x + self._ext_bias # shape = (star, wavelength)
+        ln_ext = (self._ext_slope-self._grey_term)*x + self._ext_bias # shape = (star, wavelength)
         return ln_ext
 
     def predict_obs_flux(self, stellar_type, xi,
@@ -305,7 +313,7 @@ def grads_stellar_model(stellar_model,
     chi2_factor = chi2_turnover * stellar_model._n_output
 
     # Only want gradients of stellar model parameters and extinction curve
-    trainable_var = []
+    trainable_var = ['flux_model/grey_term:0',]
     if 'stellar_model' in model_update:
             trainable_var += [ f'flux_model/hidden_0/w:{i}'
                 for i in range(stellar_model._n_hidden)
@@ -1429,15 +1437,16 @@ def grid_search_stellar_params(flux_model, data,
     idx_ext, idx_type = np.indices((ext_range.size, type_grid.shape[0]))
     ext_grid = ext_range[idx_ext]
     type_grid = type_grid[idx_type]
-    xi_grid = xi_grid[idx_type]
+    
+    if gmm_prior is not None:
+        xi_grid = np.zeros(ext_grid.shape, dtype='f4')
+    else:
+        xi_grid = xi_grid[idx_type]
 
     type_grid.shape = (-1,3)
     ext_grid.shape = (-1,)
     xi_grid.shape = (-1,)
     plx_grid = np.ones_like(ext_grid)
-    
-    if gmm_prior is not None:
-        xi_grid = np.zeros(plx_grid.shape, dtype='f4')
     
     # Calculate model flux over parameter grid, assuming plx = 1 mas
     flux_grid = flux_model.predict_obs_flux(type_grid, xi_grid, ext_grid,plx_grid)
