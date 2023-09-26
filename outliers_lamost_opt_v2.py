@@ -28,8 +28,9 @@ from astropy.table import Table
 from plot_utils import plot_corr, choose_lim, hist2d_reduce
 from xp_neural_network import FluxModel, GaussianMixtureModel
 from xp_utils import calc_invs_eigen
+from model import load_h5
 
-
+# Update: xi_est and xi_err 
 feature_keys = [
     'ln_rchi2_opt',
     'ln_dplx2',
@@ -37,9 +38,11 @@ feature_keys = [
     'teff_est',
     'logg_est',
     'feh_est',
+    'xi_est',
     'teff_est_err',
     'logg_est_err',
     'feh_est_err',
+    'xi_est_err',
     'asinh_plx_snr',
     'asinh_g_snr',
     'asinh_bp_snr',
@@ -61,7 +64,7 @@ unwise_wl = np.array([3.3526e3, 4.6028e3])
 sample_wl = np.hstack([xp_wl, tmass_wl, unwise_wl])
 
 print('Loading trained flux model ...')
-stellar_model = FluxModel.load('models/flux/xp_spectrum_model_final-1')
+stellar_model = FluxModel.load('models/flux/xp_spectrum_model_final_Rv-1')
 
 print('Loading stellar type prior ...')
 stellar_type_prior = GaussianMixtureModel.load('models/prior/gmm_prior-1')
@@ -204,6 +207,7 @@ def extract_features(d):
     n = len(d['gdr3_source_id'])
 
     features = np.empty((n,len(feature_keys)), dtype='f4')
+    
     for i,k in enumerate(feature_keys):
         features[:,i] = d[k]
         idx_nonfinite = ~np.isfinite(features[:,i])
@@ -481,7 +485,7 @@ def plot_results(d, model, param='feh'):
         )
         print(ylabel)
         ax.set_ylabel(ylabel)
-        ax.set_title(title)
+        ax.set_title(title+' V2.0')
         fig.subplots_adjust(
             left=0.12,
             right=0.96,
@@ -1004,6 +1008,7 @@ def load_lamost_data():
     print('Loading LAMOST raw data ...')
     fname = 'data/xp_results_lamost_match.h5'
     with h5py.File(fname, 'r') as f:
+        print(f.keys())
         for k in f.keys():
             d[k] = f[k][:]
 
@@ -1036,7 +1041,7 @@ def load_lamost_data():
 
 
 def load_xp_data(fid):
-    meta_fn = f'data/xp_continuous_metadata/xp_continuous_metadata_{fid}.fits.gz'
+    meta_fn = f'data/xp_continuous_metadata/xp_metadata_{fid}.h5'
     out_fn = f'data/xp_opt_output_files/xp_opt_output_{fid}.h5'
     in_fn = f'data/xp_opt_input_files/xp_opt_input_{fid}.h5'
     summary_fn = f'data/xp_summary_h5/XpSummary_{fid}.hdf5'
@@ -1047,9 +1052,9 @@ def load_xp_data(fid):
 
     d = {}
     
-    t_meta = Table.read(meta_fn, format='fits')
-    for k in t_meta.colnames:
-        d[k] = t_meta[k].data
+    t_meta = Table.read(meta_fn)
+    for k in t_meta.keys():
+        d[k] = np.array(t_meta[k]).copy()
     
     with h5py.File(out_fn, 'r') as f:
         for k in f.keys():
@@ -1067,7 +1072,8 @@ def load_xp_data(fid):
 
     with h5py.File(summary_fn, 'r') as f:
         for k in ('bp_chi_squared', 'rp_chi_squared'):
-            d[k] = f[k][:]
+            #print(f[k].shape)
+            d[k] = np.log(f[k][:])
     
     compute_additional_features(d, shuffle=False, filter_unreliable_fits=False)
 
@@ -1091,7 +1097,8 @@ def compute_additional_features(d, shuffle=True, filter_unreliable_fits=True):
     d['flux_pred'] = stellar_model.predict_obs_flux(
         d['stellar_params_est'][:,:3],
         d['stellar_params_est'][:,3],
-        d['stellar_params_est'][:,4]
+        d['stellar_params_est'][:,4],
+        d['stellar_params_est'][:,5]
     ).numpy()
 
     d['ln_prior'] = stellar_type_prior.ln_prob(
@@ -1112,19 +1119,23 @@ def compute_additional_features(d, shuffle=True, filter_unreliable_fits=True):
 
     ln_clipped = lambda x: np.log(np.clip(x, 1e-7, np.inf))
 
-    delta_plx = d['stellar_params_est'][:,4] - d['parallax']
+    delta_plx = d['stellar_params_est'][:,-1] - d['parallax']
     d['dplx'] = delta_plx / d['parallax_error']
     d['ln_dplx2'] = ln_clipped(d['dplx']**2)
 
     d['ln_rchi2_opt'] = ln_clipped(d['rchi2_opt'])
     d['ln_phot_bp_rp_excess_factor'] = ln_clipped(d['phot_bp_rp_excess_factor'])
     d['ln_ruwe'] = ln_clipped(d['ruwe'])
-
+    
+    for key in ('ln_phot_bp_rp_excess_factor', 'ln_ruwe'):
+        idx = ~np.isfinite(d[key])
+        d[key][idx] = 999.#np.nanpercentile(d[key], 99.9)    
+    
     for b in ('bp','rp'):
         key = f'{b}_chi_squared'
         d[f'ln_{key}'] = ln_clipped(d[key])
         idx = ~np.isfinite(d[f'ln_{key}'])
-        d[f'ln_{key}'] = np.nanpercentile(d[f'ln_{key}'], 99.9)
+        d[f'ln_{key}'][idx] = np.nanpercentile(d[f'ln_{key}'], 99.9)
 
     d['reliable_fit'] = (
         (d['rchi2_opt'] < 2.)
@@ -1155,7 +1166,7 @@ def compute_additional_features(d, shuffle=True, filter_unreliable_fits=True):
 
     d['asinh_plx_snr'] = np.arcsinh(d['parallax'] / d['parallax_error'])
 
-    for i,t in enumerate(['teff', 'feh', 'logg']):
+    for i,t in enumerate(['teff', 'feh', 'logg', 'xi']):
         d[f'{t}_est'] = d['stellar_params_est'][:,i]
         d[f'{t}_est_err'] = d['stellar_params_err'][:,i]
 
@@ -1167,7 +1178,8 @@ def compute_additional_features(d, shuffle=True, filter_unreliable_fits=True):
 
     if filter_unreliable_fits:
         idx = d['reliable_fit']
-        for k in d:
+        for k in d.keys():
+            #print(k, d[k].shape)
             d[k] = d[k][idx]
 
     return d
@@ -1187,9 +1199,9 @@ def apply_flags(batch_size=4096):
         fid = ofn.split('_')[-1].split('.')[0]
         print(fid)
         fn = f'data/xp_flags_v5/reliability_{fid}.h5'
-        if os.path.exists(fn):
-            print(f'Skipping {fn} ...')
-            continue
+        #if os.path.exists(fn):
+        #    print(f'Skipping {fn} ...')
+        #    continue
 
         print('Loading data ...')
         d = load_xp_data(fid)
@@ -1222,26 +1234,26 @@ def apply_flags(batch_size=4096):
 def main():
     #d_lamost = load_lamost_data()
     #d_apogee = load_apogee_data()
-
+    
     #for param in ('teff', 'feh', 'logg'):
-    #    #features,labels = prepare_training_data(d_lamost, param=param)
-    #    #plot_training_data(features, labels, param=param)
+        #features,labels = prepare_training_data(d_lamost, param=param)
+        #plot_training_data(features, labels, param=param)
 
-    #    #model, fit_history = train_model(
-    #    #    features, labels,
-    #    #    n_hidden_layers=3,
-    #    #    hidden_size=64,
-    #    #    n_epochs=1024*32
-    #    #)
-    #    #model.save(f'models/outlier_model_lamost_v2_{param}')
+        #model, fit_history = train_model(
+            #features, labels,
+            #n_hidden_layers=3,
+            #hidden_size=64,
+            #n_epochs=1024*32
+        #)
+        #model.save(f'models/outlier_model_lamost_v2_{param}')
 
-    #    model = load_model(f'models/outlier_model_lamost_v2_{param}')
-    #    #feature_imp = permutation_feature_importance(model, features, labels)
+        #model = load_model(f'models/outlier_model_lamost_v2_{param}')
+        #feature_imp = permutation_feature_importance(model, features, labels)
 
-    #    #plot_results(d_lamost, model, param=param)
-    #    #plot_results(d_apogee, model, param=param)
+        #plot_results(d_lamost, model, param=param)
+        #plot_results(d_apogee, model, param=param)
 
-    #    paper_figures(d_lamost, d_apogee, model, param=param)
+        #paper_figures(d_lamost, d_apogee, model, param=param)
 
     apply_flags()
 
