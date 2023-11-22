@@ -22,7 +22,7 @@ from model import GaussianMixtureModel, FluxModel, chi_band, gaussian_prior, \
 import model
 import plot_utils
 
-nscale=1.
+nscale = 1.
 
 def load_training_data(fname, validation_frac=0.2, seed=1, thin=1):
     # Load training data
@@ -77,7 +77,8 @@ def load_training_data(fname, validation_frac=0.2, seed=1, thin=1):
     return d_train, d_val, sample_wavelengths
 
 
-def down_sample_weighing(x_ini, all_x, bin_edges, n_bins=100):
+def down_sample_weighing(x_ini, all_x, bin_edges,
+                         n_bins=100, max_upsampling=5.):
     # Use high-Extinction stars for empirical distribution of xi
     bin_edges = np.hstack([[-np.inf], bin_edges, [np.inf]])
     
@@ -93,19 +94,13 @@ def down_sample_weighing(x_ini, all_x, bin_edges, n_bins=100):
     # Weigh all stars by the inverse of density of the ini sample
     bin_indices_all = np.digitize(all_x, bin_edges)
     weights_per_star = weights_per_bin[bin_indices_all]
-    weights_per_star /= np.median(weights_per_star)
 
-    # soft-clip of the weight
-    max_upsampling = 5.
-    weights_per_star = (1./(1./weights_per_star+1./max_upsampling)).astype('f4')
+    # Normalize the weights per star by median value
+    weights_per_star /= (1e-5 + np.median(weights_per_star))
 
+    weights_per_star = soft_clip_weights(weights_per_star, max_upsampling)
+    
     return weights_per_star.astype('f4')
-
-
-def soft_clipping(weights_per_star):
-    max_upsampling = 10. 
-    weights_per_star = (1./(1./weights_per_star+1./max_upsampling)).astype('f4')
-    return weights_per_star
 
 
 def plot_param_histograms_1d(stellar_type, weights, title, fname):
@@ -143,8 +138,12 @@ def plot_param_histograms_1d(stellar_type, weights, title, fname):
     fig.savefig(fname)
     plt.close(fig)
     
+
+def soft_clip_weights(weights, max_upsampling):
+    return weights / (1 + weights/max_upsampling)
+
     
-def weigh_prior(stellar_type_prior, d_train, scale=1.):
+def weigh_prior(stellar_type_prior, d_train, scale=1., max_upsampling=5.):
     all_ln_prior = batch_apply_tf(
         stellar_type_prior.ln_prob,
         1024,
@@ -157,10 +156,9 @@ def weigh_prior(stellar_type_prior, d_train, scale=1.):
     all_prior /= np.max(all_prior)
         
     # Weigh stars for better representation
-    max_upsampling = 5.
-    weights_per_star = (1./(all_prior+1/max_upsampling)).astype('f4')
+    weights_per_star = soft_clip_weights(weights_per_star, max_upsampling)
     
-    return weights_per_star
+    return weights_per_star.astype('f4')
 
 
 def train(data_fname, output_dir, stage=0, thin=1, E_low=0.1):
@@ -276,7 +274,7 @@ def train(data_fname, output_dir, stage=0, thin=1, E_low=0.1):
             input_scale=0.5*(p_high-p_low),
             hidden_size=32,
             l2=5., l2_ext_curve=5.
-         )   
+        )   
         
         # First, train the model with stars with good measurements,
         # with fixed slope of ext_curve
@@ -532,12 +530,10 @@ def train(data_fname, output_dir, stage=0, thin=1, E_low=0.1):
         weights_per_star = down_sample_weighing( 
             d_train['xi_est'][idx_hq_large_E],
             d_train['xi_est'], 
-            bin_edges = np.linspace(-0.8, 0.8, n_bins + 1)
+            bin_edges = np.linspace(-0.8, 0.8, n_bins+1)
         )
-        
-        weights_per_star /= (0.001+np.median(weights_per_star))
         weights_per_star *= weigh_prior(stellar_type_prior, d_train)
-        weights_per_star = soft_clipping(weights_per_star)
+        weights_per_star = soft_clip_weights(weights_per_star, 10.)
 
         title = (
             r'$\mathrm{Training\ distribution'
@@ -614,14 +610,12 @@ def train(data_fname, output_dir, stage=0, thin=1, E_low=0.1):
         atm_tracks = model.calculate_stellar_type_tracks(stellar_type_prior)
         
         weights_per_star = down_sample_weighing( 
-            d_train['xi_est'][idx_hq],
+            d_train['xi_est'][idx_hq_large_E],
             d_train['xi_est'], 
-            bin_edges = np.linspace(-0.8, 0.8, n_bins + 1)
+            bin_edges = np.linspace(-0.8, 0.8, n_bins+1)
         )
-        
-        weights_per_star /= (0.001+np.median(weights_per_star))
         weights_per_star *= weigh_prior(stellar_type_prior, d_train)
-        weights_per_star = soft_clipping(weights_per_star)
+        weights_per_star = soft_clip_weights(weights_per_star, 10.)
 
         ret = train_stellar_model(
             stellar_model,
@@ -729,13 +723,12 @@ def train(data_fname, output_dir, stage=0, thin=1, E_low=0.1):
         print(f'Training on {pct_use:.3%} of sources.')
 
         weights_per_star = down_sample_weighing( 
-            d_train['xi_est'][idx_final_train],
+            d_train['xi_est'][idx_hq_large_E],
             d_train['xi_est'], 
-            bin_edges = np.linspace(-0.8, 0.8, n_bins + 1)
+            bin_edges = np.linspace(-0.8, 0.8, n_bins+1)
         )
-        weights_per_star /= (0.001+np.median(weights_per_star))
         weights_per_star *= weigh_prior(stellar_type_prior, d_train)
-        weights_per_star = soft_clipping(weights_per_star)
+        weights_per_star = soft_clip_weights(weights_per_star, 10.)
 
         title = (
             r'$\mathrm{Training\ distribution'

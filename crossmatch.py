@@ -155,7 +155,7 @@ class HEALPixCatalog(object):
         start_idx = np.hstack([start_idx, len(pix_idx)])
 
         if show_progress:
-            from tqdm import tqdm
+            from tqdm.auto import tqdm
             pix_idx_unique = tqdm(pix_idx_unique)
 
         self.hpix_dict = {}
@@ -199,12 +199,18 @@ def dist2_matrix(lon1, lat1, lon2, lat2):
     return d2
 
 
-def match_catalogs(base_cat, over_cat, dist_max):
+def match_catalogs(base_cat, over_cat, dist_max, show_progress=False):
     idx1_match, idx2_match, dist_match = [], [], []
 
     dmax_rad = dist_max.to('rad').value
 
-    for pix_idx in over_cat.get_pix_indices():
+    iterator = over_cat.get_pix_indices()
+
+    if show_progress:
+        from tqdm.auto import tqdm
+        iterator = tqdm(iterator)
+
+    for pix_idx in iterator:
         lon2, lat2, idx2 = over_cat.fetch_pixel(pix_idx)
         lon1, lat1, idx1 = base_cat.fetch_patch(lon2, lat2)
 

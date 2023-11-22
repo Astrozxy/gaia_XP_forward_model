@@ -15,9 +15,7 @@ from reproject import reproject_from_healpix
 from astropy_healpix import HEALPix
 
 
-def plot_mollweide(healpix_data, *subplot_args, fig=None,
-                   w=480, input_frame='galactic', plot_frame='galactic',
-                   grid_kw=dict(), **kwargs):
+def mollweide_wcs(w, frame):
     coordsys,ctype0,ctype1 = {
         'galactic': ('GAL', 'GLON-MOL', 'GLAT-MOL'),
         'icrs':     ('EQU', 'RA---MOL', 'DEC--MOL')
@@ -39,6 +37,13 @@ def plot_mollweide(healpix_data, *subplot_args, fig=None,
         coordsys=coordsys
     )
     wcs = WCS(target_header)
+    return wcs
+
+
+def plot_mollweide(healpix_data, *subplot_args, fig=None,
+                   w=480, input_frame='galactic', plot_frame='galactic',
+                   grid_kw=dict(), **kwargs):
+    wcs = mollweide_wcs(w, plot_frame)
     print(wcs)
 
     array, footprint = reproject_from_healpix(
@@ -76,19 +81,22 @@ def plot_mollweide(healpix_data, *subplot_args, fig=None,
     return fig, ax, im
 
 
-def plot_tangent(healpix_data, *subplot_args, fig=None,
-                 center=(0.,0.), fov=(15.,15.), w=480,
-                 input_frame='galactic', plot_frame='galactic',
-                 grid_kw=dict(), **kwargs):
+def tangent_wcs(center, fov, w, frame, rotation=0):
     # Determine height (in pixels) of image, based on width and fov ratio
     tan_th0 = np.tan(np.radians(fov[0]/2))
     tan_th1 = np.tan(np.radians(fov[1]/2))
     h = int(np.round(w * tan_th1 / tan_th0))
-    
+
+    # Coordinate frame
     coordsys,ctype0,ctype1 = {
         'galactic': ('GAL', 'GLON-TAN', 'GLAT-TAN'),
         'icrs':     ('EQU', 'RA---TAN', 'DEC--TAN')
-    }[plot_frame]
+    }[frame]
+
+    # Rotation matrix
+    th = np.radians(rotation)
+    pc = [[np.cos(th), np.sin(th)],
+          [-np.sin(th), np.cos(th)]]
     
     target_header = dict(
         naxis=2,
@@ -104,15 +112,27 @@ def plot_tangent(healpix_data, *subplot_args, fig=None,
         crval2=center[1],
         cdelt2=np.degrees(tan_th1)/(0.5*h),
         cunit2='deg',
-        coordsys=coordsys
+        coordsys=coordsys,
+        pc1_1=pc[0][0],
+        pc1_2=pc[0][1],
+        pc2_1=pc[1][0],
+        pc2_2=pc[1][1]
     )
     wcs = WCS(target_header)
+    return wcs
+
+
+def plot_tangent(healpix_data, *subplot_args, fig=None,
+                 center=(0.,0.), fov=(15.,15.), w=480,
+                 input_frame='galactic', plot_frame='galactic',
+                 grid_kw=dict(), **kwargs):
+    wcs = tangent_wcs(center, fov, w, plot_frame)
     print(wcs)
 
     array, footprint = reproject_from_healpix(
         (healpix_data, input_frame),
         wcs, nested=True,
-        shape_out=(w,h),
+        shape_out=wcs.pixel_shape,
         order='nearest-neighbor'
     )
 
@@ -139,6 +159,29 @@ def plot_tangent(healpix_data, *subplot_args, fig=None,
     # ax.coords[coord1].set_ticks_visible(False)
 
     return fig, ax, im
+
+
+def wcs_project_points(wcs, coord0, coord1):
+    img_pix_idx = wcs.all_world2pix(coord0, coord1, 0)
+    for idx in img_pix_idx:
+        idx[~np.isfinite(idx)] = -1
+
+    idx_oob = (
+        (img_pix_idx[0] < 0)
+      | (img_pix_idx[1] < 0)
+      | (img_pix_idx[0] >= wcs.pixel_shape[0])
+      | (img_pix_idx[1] >= wcs.pixel_shape[1])
+    )
+
+    idx_proj = np.where(~idx_oob)[0]
+    xy_proj = [i[idx_proj] for i in img_pix_idx]
+
+    return xy_proj, idx_proj
+
+
+def get_wcs_coordimage(wcs):
+    idx_y,idx_x = np.indices(wcs.array_shape)
+    return wcs.pixel_to_world(idx_x, idx_y)
 
 
 def healpix_mean_map(lon, lat, data, nside, weights=None):
