@@ -158,8 +158,6 @@ class FluxModel(snt.Module):
         # Count the total number of weights
         self._n_flux_weights = sum([int(tf.size(l.w)) for l in self._layers])   
         self._n_ext_weights = int(tf.size(self._ext_slope))
-        
-
 
     def predict_intrinsic_ln_flux(self, stellar_type):
         """
