@@ -96,6 +96,25 @@ class TestBatchApplyTF(unittest.TestCase):
                                            atol=1e-5, rtol=1e-5)
 
 
+def append_to_h5_file(h5_file, data, chunk_size=512, compression='lzf'):
+    for key in data:
+        if key in h5_file:
+            # Append to existing dataset
+            dset = h5_file[key]
+            n_add = len(data[key])
+            s = dset.shape
+            dset.resize((s[0]+n_add,)+s[1:])
+            dset[s[0]:] = data[key][:]
+        else:
+            # Create new dataset
+            s = data[key].shape
+            h5_file.create_dataset(
+                key, data=data[key],
+                maxshape=(None,)+s[1:],
+                chunks=(chunk_size,)+s[1:],
+                compression=compression
+            )
+
 def main():
     unittest.main()
 
