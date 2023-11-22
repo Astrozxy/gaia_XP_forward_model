@@ -49,6 +49,7 @@ import astropy.units as units
 import astropy.constants as const
 
 
+
 def corr_matrix(cov):
     sigma = np.sqrt(np.diag(cov))
     corr = cov / np.outer(sigma, sigma)
@@ -119,10 +120,23 @@ class FluxModel(snt.Module):
         self._activation = tf.math.tanh
         
         # Initialize extinction curve
+        #self._ext_slope = tf.Variable(
+        #    tf.zeros((1, self._n_output)),
+        #    name='ext_slope'
+        #)
+
+        slope_unwise = np.zeros((1,2), dtype='f4')
+        self._ext_slope_unwise = tf.Variable(
+            slope_unwise,
+            name='ext_slope_unwise'
+                )
+
         self._ext_slope = tf.Variable(
-            tf.zeros((1, self._n_output)),
+            tf.zeros((1, self._n_output-2)),
             name='ext_slope'
         )
+
+
         self._ext_bias = tf.Variable(
             tf.zeros((1, self._n_output)),
             name='ext_bias'
@@ -139,13 +153,11 @@ class FluxModel(snt.Module):
         R1_guess = R1_guess.astype('float32')
         
         self._ext_bias.assign(R0_guess.reshape(1,-1))
-        self._ext_slope.assign(R1_guess.reshape(1,-1))
+        self._ext_slope.assign(R1_guess[:-2].reshape(1,-1))
         
         # Count the total number of weights
         self._n_flux_weights = sum([int(tf.size(l.w)) for l in self._layers])   
         self._n_ext_weights = int(tf.size(self._ext_slope))
-        
-
 
     def predict_intrinsic_ln_flux(self, stellar_type):
         """
@@ -169,14 +181,16 @@ class FluxModel(snt.Module):
         """
         # Run xi through the neural net
         x = tf.expand_dims(xi, 1) # shape = (star, 1)
-        ln_ext = self._ext_slope*tf.math.tanh(x) + self._ext_bias # shape = (star, wavelength)
+        ext_slope_full = tf.concat([self._ext_slope, 
+                                    self._ext_slope_unwise], axis=1)
+        ln_ext = ext_slope_full*tf.math.tanh(x) + self._ext_bias # shape = (star, wavelength)
         return ln_ext
 
     def predict_obs_flux(self, stellar_type, xi,
                          stellar_extinction, stellar_parallax):
         """
         Returns predicted flux for the given stellar types,
-        at the given parallaxes and extinctions.
+        at  the given parallaxes and extinctions.
         """
         # Convert extinction curve from log to linear scale
         ext_curve = tf.math.exp(self.predict_ln_ext_curve(xi))
@@ -213,6 +227,15 @@ class FluxModel(snt.Module):
         #print('chi2.shape:', chi2.shape)
         return chi2
 
+    def roughness(self, stellar_type):
+        with tf.GradientTape(watch_accessed_variables=False) as g:
+            g.watch(stellar_type)
+            ln_flux = self.predict_intrinsic_ln_flux(stellar_type)
+        df_dx = g.batch_jacobian(ln_flux, stellar_type) # (star,wl,param)
+        rough_i = tf.reduce_mean(df_dx**2, axis=(1,2)) # (star,)
+        rough = tf.math.reduce_std(rough_i)
+        return rough
+
     def penalty(self):
         l2_sum = 0.
         # Penalty on stellar model nn weights
@@ -221,6 +244,28 @@ class FluxModel(snt.Module):
         l2_sum = self._l2 * l2_sum / float(self._n_flux_weights)
         # Penalty on variation of the extinction curve
         l2_sum = l2_sum + self._l2_ext_curve*tf.reduce_mean(self._ext_slope**2)
+        # Delta wavelength (in units of 10 nm)
+        _, wl0 = tf.split(
+            self._sample_wavelengths,
+            [1,self._n_output-1],
+            axis=0
+        )
+        wl1, _ = tf.split(
+            self._sample_wavelengths,
+            [self._n_output-1,1],
+            axis=0
+        )
+        dwl = (1./wl0 - 1./wl1) * 30250 # 30250 == 550**2 /10. /10.
+        dwl = tf.expand_dims(dwl, axis=0)
+        # Penalty on roughness of extinction curve zero point
+        _, bias0 = tf.split(self._ext_bias, [1,self._n_output-1], axis=1)
+        bias1, _ = tf.split(self._ext_bias, [self._n_output-1,1], axis=1)
+        l2_sum = l2_sum + self._l2_ext_curve*tf.reduce_mean(((bias0-bias1)/dwl)**2)
+        # Penalty on roughness of extinction curve slope
+        dwl_wo_unwise,_ = tf.split(dwl, [self._n_output-3,2], axis=1)
+        _, slope0 = tf.split(self._ext_slope, [1,self._n_output-3], axis=1)
+        slope1, _ = tf.split(self._ext_slope, [self._n_output-3,1], axis=1)
+        l2_sum = l2_sum + self._l2_ext_curve*tf.reduce_mean(((slope0-slope1)/dwl_wo_unwise)**2)
         return  l2_sum
 
     def get_sample_wavelengths(self):
@@ -297,6 +342,7 @@ def grads_stellar_model(stellar_model,
                         flux_obs, flux_sqrticov,
                         extra_weight,
                         chi2_turnover=tf.constant(20.),        
+                        roughness_l2=tf.constant(1.),
                         model_update = ['stellar_model', 'ext_curve_w', 'ext_curve_b'],
                         ):
     """
@@ -349,6 +395,9 @@ def grads_stellar_model(stellar_model,
         chi2 = tf.reduce_sum(extra_weight*chi2) / tf.reduce_sum(extra_weight)
         # Add in penalty (generally, for model complexity)
         loss = chi2 + stellar_model.penalty()
+
+        # Penalty on gradients of model (similar to model discontinuity)
+        loss = loss + roughness_l2 * stellar_model.roughness(stellar_type)
 
     # Calculate d(loss)/d(variables)
     grads = g.gradient(loss, variables)
@@ -1408,42 +1457,49 @@ def plot_RV_skymap(flux_model, data, nside=16):
 
 def grid_search_stellar_params(flux_model, data,
                                gmm_prior=None, rng=None,
-                               batch_size=128):
+                               batch_size=128,
+                               sample_by_prior=False
+                               ):
     # Set up stellar type grid
-    if gmm_prior is not None:
-        type_grid = gmm_prior.sample(128, rng=rng)
+    if sample_by_prior:
+        type_grid = gmm_prior.sample(256, rng=rng)
     else:
-        teff_range = np.arange(3., 9.01, 2.0, dtype='f4')
-        feh_range = np.arange(-1.5, 0.501, 1.0, dtype='f4')
-        logg_range = np.arange(-1.0, 5.01, 0.5, dtype='f4')
-        xi_range = np.arange(-0.5, 0.5, 0.5, dtype='f4')
-        teff_grid,feh_grid,logg_grid, xi_grid = np.meshgrid(
-            teff_range, feh_range, logg_range, xi_range
+        teff_range = np.arange(3., 9.01, 0.3, dtype='f4') # 21 grids
+        feh_range = np.arange(-2.0, 0.701, 0.3, dtype='f4') # 10 grids
+        logg_range = np.arange(-1.0, 5.01, 0.3, dtype='f4') # 21 grids
+        
+        teff_grid,feh_grid,logg_grid = np.meshgrid(
+            teff_range, feh_range, logg_range
         )
         teff_grid.shape = (-1,)
         feh_grid.shape = (-1,)
         logg_grid.shape = (-1,)
-        xi_grid.shape = (-1,)
+        
+        # Reject grid points that are rare in the training set
+        type_grid = np.stack([teff_grid,feh_grid,logg_grid], axis=1)
+        ln_prior_grid = gmm_prior.ln_prob(type_grid)
+        select_by_prior = (ln_prior_grid>-5.41)
+        teff_grid = teff_grid[select_by_prior]
+        feh_grid = feh_grid[select_by_prior]
+        logg_grid = logg_grid[select_by_prior]
         type_grid = np.stack([teff_grid,feh_grid,logg_grid], axis=1)
 
     # Cartesian product with extinction grid
-    ext_range = 10**np.arange(-2.0, 1.01, 0.1, dtype='f4')
-    idx_ext, idx_type = np.indices((ext_range.size, type_grid.shape[0]))
+    xi_range = np.arange(-0.6, 0.601, 0.3, dtype='f4') # 5 grids
+    ext_range = 10**np.arange(-2.0, 1.01, 0.05, dtype='f4') # 61 grids
+    idx_ext, idx_type, idx_xi = np.indices((ext_range.size, type_grid.shape[0], xi_range.size))
     ext_grid = ext_range[idx_ext]
     type_grid = type_grid[idx_type]
-    
-    if gmm_prior is not None:
-        xi_grid = np.zeros(ext_grid.shape, dtype='f4')
-    else:
-        xi_grid = xi_grid[idx_type]
+    xi_grid = xi_range[idx_xi]
 
     type_grid.shape = (-1,3)
     ext_grid.shape = (-1,)
     xi_grid.shape = (-1,)
     plx_grid = np.ones_like(ext_grid)
     
+    
     # Calculate model flux over parameter grid, assuming plx = 1 mas
-    flux_grid = flux_model.predict_obs_flux(type_grid, xi_grid, ext_grid,plx_grid)
+    flux_grid = flux_model.predict_obs_flux(type_grid, xi_grid, ext_grid, plx_grid)
     flux_grid_exp = tf.expand_dims(flux_grid, 1) # Shape = (param, 1, wavelength)
 
     n_stars = len(data['plx'])
@@ -1588,14 +1644,14 @@ def grid_search_stellar_params(flux_model, data,
 
 def ln_prior_clipped(use_prior, st_type_b, ln_prior_clip):
     ln_prior_by_gmm = use_prior.ln_prob(st_type_b)
-    prior_type = (
-        ln_prior_by_gmm + ln_prior_clip 
-      - tf.math.log(
-            tf.math.exp(ln_prior_clip)
-          + tf.math.exp(ln_prior_by_gmm)
-        )
-    )
-    return prior_type
+    #prior_type = (
+    #    ln_prior_by_gmm + ln_prior_clip 
+    #  - tf.math.log(
+    #        tf.math.exp(ln_prior_clip)
+    #      + tf.math.exp(ln_prior_by_gmm)
+    #    )
+    #)
+    return ln_prior_by_gmm
 
     
 def optimize_stellar_params(flux_model, data,
