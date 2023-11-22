@@ -224,7 +224,8 @@ def plot_corr(ax, x, y, x_lim=None, d_max=None,
 
     ax.set_xlim(x_edges[0], x_edges[-1])
     ax.set_ylim(y_edges[0], y_edges[-1])
-
+    
+    return x_pct
 
 def choose_lim(x, pct=[1., 99.], expand=0.2):
     x0,x1 = np.percentile(x[np.isfinite(x)], pct)

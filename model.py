@@ -192,7 +192,7 @@ class FluxModel(snt.Module):
                          stellar_extinction, stellar_parallax):
         """
         Returns predicted flux for the given stellar types,
-        at the given parallaxes and extinctions.
+        at  the given parallaxes and extinctions.
         """
         # Convert extinction curve from log to linear scale
         ext_curve = tf.math.exp(self.predict_ln_ext_curve(xi))
@@ -228,6 +228,15 @@ class FluxModel(snt.Module):
         chi2 = tf.reduce_sum(sqrticov_dflux*sqrticov_dflux, axis=1)
         #print('chi2.shape:', chi2.shape)
         return chi2
+
+    def roughness(self, stellar_type):
+        with tf.GradientTape(watch_accessed_variables=False) as g:
+            g.watch(stellar_type)
+            ln_flux = self.predict_intrinsic_ln_flux(stellar_type)
+        df_dx = g.batch_jacobian(ln_flux, stellar_type) # (star,wl,param)
+        rough_i = tf.reduce_mean(df_dx**2, axis=(1,2)) # (star,)
+        rough = tf.math.reduce_std(rough_i)
+        return rough
 
     def penalty(self):
         l2_sum = 0.
@@ -335,6 +344,7 @@ def grads_stellar_model(stellar_model,
                         flux_obs, flux_sqrticov,
                         extra_weight,
                         chi2_turnover=tf.constant(20.),        
+                        roughness_l2=tf.constant(1.),
                         model_update = ['stellar_model', 'ext_curve_w', 'ext_curve_b'],
                         ):
     """
@@ -387,6 +397,9 @@ def grads_stellar_model(stellar_model,
         chi2 = tf.reduce_sum(extra_weight*chi2) / tf.reduce_sum(extra_weight)
         # Add in penalty (generally, for model complexity)
         loss = chi2 + stellar_model.penalty()
+
+        # Penalty on gradients of model (similar to model discontinuity)
+        loss = loss + roughness_l2 * stellar_model.roughness(stellar_type)
 
     # Calculate d(loss)/d(variables)
     grads = g.gradient(loss, variables)
