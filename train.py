@@ -4,6 +4,8 @@ import matplotlib.pyplot as plt
 from matplotlib.ticker import MultipleLocator, AutoMinorLocator
 from matplotlib.colors import Normalize, LogNorm
 
+import tensorflow as tf
+
 from argparse import ArgumentParser
 from pathlib import Path
 from tqdm import tqdm
@@ -28,8 +30,8 @@ def load_training_data(fname, validation_frac=0.2, seed=1, thin=1):
     # Load training data
     with h5py.File(fname, 'r') as f:
         d = {key:f[key][:][::thin] for key in f.keys()}
-        #sample_wavelengths = f['flux'].attrs['sample_wavelengths'][:]
-        sample_wavelengths = np.load('wl.npy').astype('f4')
+        sample_wavelengths = f['flux'].attrs['sample_wavelengths'][:]
+    #sample_wavelengths = np.load('wl.npy').astype('f4')
 
     # Ensure that certain fields are in float32 format
     f4_keys = [
@@ -154,11 +156,12 @@ def weigh_prior(stellar_type_prior, d_train, scale=1., max_upsampling=5.):
     )
     all_prior = np.exp(scale*all_ln_prior)
     all_prior /= np.max(all_prior)
+    weight_per_star = 1 / (all_prior + 1e-9)
         
     # Weigh stars for better representation
-    weights_per_star = soft_clip_weights(weights_per_star, max_upsampling)
+    weight_per_star = soft_clip_weights(1/all_prior, max_upsampling)
     
-    return weights_per_star.astype('f4')
+    return weight_per_star.astype('f4')
 
 
 def train(data_fname, output_dir, stage=0, thin=1, E_low=0.1):
@@ -212,13 +215,18 @@ def train(data_fname, output_dir, stage=0, thin=1, E_low=0.1):
         save_as_h5(d_train, full_fn('data/d_train.h5'))
         
         # Generate GMM prior
-        print('Generating Gaussian Mixture Model prior on stellar type ...')
-        stellar_type_prior = GaussianMixtureModel(3, n_components=16)
-        n_prior_max = 1000000 # Use at most this many stars to learn GMM prior
-        stellar_type_prior.fit(d_train['stellar_type'][:n_prior_max])
-        stellar_type_prior.save(full_fn('models/prior/gmm_prior'))
-        print('  -> Plotting prior ...')
-        plot_gmm_prior(stellar_type_prior, base_path=output_dir)
+        fn_prior = full_fn('models/prior/gmm_prior')
+        if os.path.exists(fn_prior+'-1.index'):
+            print('Loading existing Gaussian Mixture Model prior ...')
+            stellar_type_prior = GaussianMixtureModel.load(fn_prior+'-1')
+        else:
+            print('Generating Gaussian Mixture Model prior on stellar type ...')
+            stellar_type_prior = GaussianMixtureModel(3, n_components=16)
+            n_prior_max = 1000000 # Use at most this many stars to learn GMM prior
+            stellar_type_prior.fit(d_train['stellar_type'][:n_prior_max])
+            stellar_type_prior.save(fn_prior)
+            print('  -> Plotting prior ...')
+            plot_gmm_prior(stellar_type_prior, base_path=output_dir)
         
         weights_per_star = weigh_prior(stellar_type_prior, d_train)
         
@@ -273,7 +281,7 @@ def train(data_fname, output_dir, stage=0, thin=1, E_low=0.1):
             input_zp=np.median(d_train['stellar_type'],axis=0),
             input_scale=0.5*(p_high-p_low),
             hidden_size=32,
-            l2=5., l2_ext_curve=5.
+            l2=5., l2_ext_curve=0.5
         )   
         
         # First, train the model with stars with good measurements,
@@ -309,6 +317,10 @@ def train(data_fname, output_dir, stage=0, thin=1, E_low=0.1):
             fig,ax = model.plot_stellar_model(stellar_model, track)
             fig.savefig(full_fn(f'plots/stellar_model_step0a_track{i}'))
             plt.close(fig)
+
+        fig,_ = plot_roughness(d_train['stellar_type'], stellar_model)
+        fig.savefig(full_fn('plots/roughness_step0a'))
+        plt.close(fig)
         
         fig,_ = model.plot_extinction_curve(stellar_model, show_variation=False)
         fig.savefig(full_fn('plots/extinction_curve_step0a'))
@@ -343,6 +355,10 @@ def train(data_fname, output_dir, stage=0, thin=1, E_low=0.1):
             fig.savefig(full_fn(f'plots/stellar_model_step0b_track{i}'))
             plt.close(fig)
         
+        fig,_ = plot_roughness(d_train['stellar_type'], stellar_model)
+        fig.savefig(full_fn('plots/roughness_step0b'))
+        plt.close(fig)
+
         fig,_ = model.plot_extinction_curve(stellar_model, show_variation=False)
         fig.savefig(full_fn('plots/extinction_curve_step0b'))
         plt.close(fig)
@@ -438,6 +454,10 @@ def train(data_fname, output_dir, stage=0, thin=1, E_low=0.1):
             fig.savefig(full_fn(f'plots/stellar_model_step0c_track{i}'))
             plt.close(fig)
         
+        fig,_ = plot_roughness(d_train['stellar_type'], stellar_model)
+        fig.savefig(full_fn('plots/roughness_step0c'))
+        plt.close(fig)
+
         fig,_ = model.plot_extinction_curve(stellar_model, show_variation=False)
         fig.savefig(full_fn('plots/extinction_curve_step0c'))
         plt.close(fig)
@@ -465,15 +485,14 @@ def train(data_fname, output_dir, stage=0, thin=1, E_low=0.1):
         )    
         
         # Initial weight of stars: equal
-        weights_per_star = np.ones(len(d_train["plx"]), dtype='f4')
+        weights_per_star = np.ones(len(d_train['plx']), dtype='f4')
         idx_hq = np.load(full_fn('index/idx_good_wo_Rv.npy'))
         
         # Run more steps in this stage
         n_epochs_1 = 256
 
         # Optimize the params of high-quality stars 
-        print('Optimizing params of hq stars')
-        
+        print('Optimizing params of hq stars ...')
         ret = train_stellar_model(
             stellar_model,
             d_train,
@@ -485,7 +504,7 @@ def train(data_fname, output_dir, stage=0, thin=1, E_low=0.1):
             #lr_stars_init=1e-5,        
             batch_size=batch_size,
             n_epochs=n_epochs,
-            var_update=['atm', 'E', 'plx'],
+            var_update=['atm','E','plx'],
         )
         
         save_as_h5(d_train, full_fn('data/dtrain_final_wo_Rv_optimized.h5'))
@@ -495,7 +514,6 @@ def train(data_fname, output_dir, stage=0, thin=1, E_low=0.1):
         large_E = (d_train['stellar_ext_est']>E_low)
         idx_hq_large_E = idx_hq & large_E
         pct_use = np.mean(idx_hq_large_E)
-        print(f'Learning (xi, E, plx) for {pct_use:.3%} of sources.')
 
         title = (
             r'$\mathrm{Training\ distribution'
@@ -509,6 +527,7 @@ def train(data_fname, output_dir, stage=0, thin=1, E_low=0.1):
             full_fn('plots/training_stellar_type_hist1d_step1a')
         )
         
+        print(f'Learning (xi,E,plx) for {pct_use:.3%} of sources (high E) ...')
         ret = train_stellar_model(
             stellar_model,
             d_train,
@@ -520,7 +539,7 @@ def train(data_fname, output_dir, stage=0, thin=1, E_low=0.1):
             #lr_stars_init=1e-5,        
             batch_size=batch_size,
             n_epochs=n_epochs,
-            var_update=['E', 'plx', 'xi'],
+            var_update=['E','plx','xi'],
         )
         
         save_as_h5(d_train, full_fn('data/dtrain_initial_guess_xi.h5'))
@@ -547,6 +566,8 @@ def train(data_fname, output_dir, stage=0, thin=1, E_low=0.1):
             full_fn('plots/training_stellar_type_hist1d_step1b')
         )
         
+        print(f'Learning (xi,E) for {pct_use:.3%} of sources (high E)')
+        print('... in addition to mean extinction curve ...')
         ret = train_stellar_model(
             stellar_model,
             d_train,
@@ -558,16 +579,22 @@ def train(data_fname, output_dir, stage=0, thin=1, E_low=0.1):
             lr_stars_init=1e-5,
             batch_size=batch_size,
             n_epochs=n_epochs,
-            var_update=['E', 'xi'],
+            var_update=['E','xi'],
             model_update=['ext_curve_b'],
         ) 
+
+        fig,_ = model.plot_extinction_curve(stellar_model, show_variation=True)
+        fig.savefig(full_fn('plots/extinction_curve_step1b'))
+        plt.close(fig)
         
         stellar_model.save(full_fn('models/flux/xp_spectrum_model_initial_update_b'))
         
         stellar_model = FluxModel.load(
             full_fn('models/flux/xp_spectrum_model_initial_update_b-1')
-            )
+        )
         
+        print(f'Learning (xi,E) for {pct_use:.3%} of sources (high E)')
+        print('... in addition to extinction curve variation ...')
         ret = train_stellar_model(
             stellar_model,
             d_train,
@@ -579,11 +606,13 @@ def train(data_fname, output_dir, stage=0, thin=1, E_low=0.1):
             lr_stars_init=1e-5,
             batch_size=batch_size,
             n_epochs=n_epochs_1,
-            var_update=['E', 'xi'],
+            var_update=['E','xi'],
             model_update=['ext_curve_w'],
         ) 
         
-        # TODO: Plot extinction curve here
+        fig,_ = model.plot_extinction_curve(stellar_model, show_variation=True)
+        fig.savefig(full_fn('plots/extinction_curve_step1c'))
+        plt.close(fig)
 
         np.save(full_fn('index/idx_hq.npy'), idx_hq)
         # Save initial guess of xi
@@ -617,11 +646,15 @@ def train(data_fname, output_dir, stage=0, thin=1, E_low=0.1):
         weights_per_star *= weigh_prior(stellar_type_prior, d_train)
         weights_per_star = soft_clip_weights(weights_per_star, 10.)
 
+        idx_use = np.where(idx_hq & idx_large_E)[0]
+        pct_use = idx_use.size / idx_hq.size
+
+        print(f'Learning everything for {pct_use:.3%} of sources (high E) ...')
         ret = train_stellar_model(
             stellar_model,
             d_train,
             weights_per_star,
-            idx_train=np.where(idx_hq&idx_large_E)[0],
+            idx_train=idx_use,
             optimize_stellar_model=True,
             optimize_stellar_params=True,
             lr_model_init=1e-5,
@@ -629,7 +662,7 @@ def train(data_fname, output_dir, stage=0, thin=1, E_low=0.1):
             batch_size=batch_size,
             n_epochs=n_epochs,
             var_update=['atm','E','plx','xi'],
-            model_update=['stellar_model', 'ext_curve_w', 'ext_curve_b'],
+            model_update=['stellar_model','ext_curve_w','ext_curve_b'],
         )
 
         print('Plotting stellar model ...')
@@ -638,6 +671,10 @@ def train(data_fname, output_dir, stage=0, thin=1, E_low=0.1):
             fig.savefig(full_fn(f'plots/stellar_model_step2_track{i}'))
             plt.close(fig)
         
+        fig,_ = plot_roughness(d_train['stellar_type'], stellar_model)
+        fig.savefig(full_fn('plots/roughness_step2'))
+        plt.close(fig)
+
         fig,_ = model.plot_extinction_curve(stellar_model, show_variation=True)
         fig.savefig(full_fn('plots/extinction_curve_step2'))
         plt.close(fig)
@@ -678,6 +715,7 @@ def train(data_fname, output_dir, stage=0, thin=1, E_low=0.1):
         n_epochs = 128
         weights_per_star = np.ones(d_train['stellar_type'].shape[0]).astype('float32')
         
+        print('Learning stellar parameters for all sources ...')
         ret = train_stellar_model(
             stellar_model,
             d_train,
@@ -742,6 +780,9 @@ def train(data_fname, output_dir, stage=0, thin=1, E_low=0.1):
             full_fn('plots/training_stellar_type_hist1d_step3a')
         )
 
+        pct_use = np.mean(idx_final_train)
+        print('Learning everything except extinction curve variation')
+        print(f'using {pct_use:.3%} of sources (cut flux/param outliers) ...')
         ret = train_stellar_model(
             stellar_model,
             d_train,
@@ -753,9 +794,10 @@ def train(data_fname, output_dir, stage=0, thin=1, E_low=0.1):
             lr_stars_init=1e-4,
             batch_size=batch_size,
             n_epochs=n_epochs,
-            # Freeze xi when training with all stars (not necessarily having high E)
-            var_update = ['atm','E','plx','xi'],
-            model_update = ['stellar_model', 'ext_curve_b'], 
+            # Freeze extinction curve variation when training with
+            # all stars (not necessarily having high E)
+            var_update=['atm','E','plx','xi'],
+            model_update=['stellar_model','ext_curve_b'], 
         )
 
         stellar_model.save(full_fn('models/flux/xp_spectrum_model_final_Rv'))
@@ -765,6 +807,10 @@ def train(data_fname, output_dir, stage=0, thin=1, E_low=0.1):
         fig.savefig(full_fn(f'plots/stellar_model_step3_track{i}'))
         plt.close(fig)
         
+        fig,_ = plot_roughness(d_train['stellar_type'], stellar_model)
+        fig.savefig(full_fn('plots/roughness_step3'))
+        plt.close(fig)
+
         fig,_ = model.plot_extinction_curve(stellar_model, show_variation=True)
         fig.savefig(full_fn('plots/extinction_curve_step3'))
         plt.close(fig)
@@ -780,6 +826,7 @@ def train(data_fname, output_dir, stage=0, thin=1, E_low=0.1):
         stellar_model.save(full_fn('models/flux/xp_spectrum_model_final_Rv'))
         save_as_h5(ret, full_fn('hist_loss/final_Rv.h5'))
 
+        print('Optimizing stellar parameters in training set ...')
         ret = train_stellar_model(
             stellar_model,
             d_train,
@@ -790,11 +837,20 @@ def train(data_fname, output_dir, stage=0, thin=1, E_low=0.1):
             batch_size=batch_size,
             n_epochs=n_epochs,
             var_update = ['atm','E','plx','xi'],
-        )         
+        )
+
+        fig,_ = model.plot_RV_histogram(stellar_model, d_train)
+        fig.savefig(full_fn('plots/RV_histogram_final'))
+        plt.close(fig)
+        
+        fig,_ = model.plot_RV_skymap(stellar_model, d_train)
+        fig.savefig(full_fn('plots/RV_skymap_final'))
+        plt.close(fig)
         
         for key in ('stellar_type', 'xi', 'stellar_ext', 'plx'):
             d_val[f'{key}_est'] = d_val[key].copy()
         
+        print('Optimizing stellar parameters in validation set ...')
         ret = train_stellar_model(
             stellar_model,
             d_val,
@@ -811,6 +867,42 @@ def train(data_fname, output_dir, stage=0, thin=1, E_low=0.1):
         save_as_h5(d_val, full_fn('data/dval_Rv_final.h5'))
         
         return 0
+
+
+def plot_roughness(theta, stellar_model):
+    roughness_plot = batch_apply_tf(
+        lambda x: stellar_model.roughness(tf.convert_to_tensor(x),
+                                          reduce_stars=False),
+        1024, theta,
+        function=True,
+        numpy=True,
+        progress=False
+    )
+    fig,ax_arr = plot_utils.projection_grid(
+        theta,
+        c=roughness_plot,
+        labels=(r'$T_{\mathrm{eff}} / (1000\,\mathrm{K})$',
+                r'$\left[\mathrm{Fe/H}\right] / \mathrm{dex}$',
+                r'$\log g / \mathrm{dex}$'),
+        extents=[(13.,3.),(-2.7,1.0),(5.2,-0.3)],
+        scatter=False,
+        clabel=(r'$\langle\left| '
+                r'\nabla_{\!\theta}\, f_{\lambda}\, '
+                r'\right|^2\rangle$'),
+        hist_kw=dict(bins=100),
+        #fig_kw=dict(dpi=200),
+        norm=Normalize(0,5)
+    )
+    for ax in ax_arr.flat:
+        ax.xaxis.set_minor_locator(AutoMinorLocator())
+        ax.yaxis.set_minor_locator(AutoMinorLocator())
+    fig.suptitle(r'$\mathrm{roughness}$')
+    fig.subplots_adjust(
+        left=0.14, right=0.97,
+        bottom=0.12, top=0.92,
+        hspace=0.07, wspace=0.07
+    )
+    return fig,ax_arr
 
 
 def plot_camd(d, color_key=None, color_dim=None, low_extinction=False):
