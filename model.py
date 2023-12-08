@@ -22,7 +22,7 @@ for gpu in gpus:
 
 from scipy.stats import binned_statistic_2d
 from scipy.special import logsumexp
-from scipy.interpolate import UnivariateSpline
+from scipy.interpolate import UnivariateSpline, CubicSpline
 import scipy.ndimage
 import scipy.signal
 
@@ -60,10 +60,40 @@ def corr_matrix(cov):
 class FluxModel(snt.Module):
     def __init__(self, sample_wavelengths, n_input=3, 
                        n_hidden=3, hidden_size=32,
+                       n_wl_fix_ext=2,
                        input_zp=None, input_scale=None,
                        l2=1., l2_ext_curve=1.):
         """
         Constructor for FluxModel.
+
+        Inputs:
+          sample_wavelengths (np.ndarray): Wavelengths at which to output
+                                           spectrum.
+
+        Optional inputs:
+          n_input (int): Dimensionality of parameter space (eg, 3 for
+                         teff,feh,logg). Defaults to 3.
+          n_hidden (int): Number of hidden layers. Defaults to 3.
+          hidden_size (int): Number of neurons in each hidden layer. Defaults
+                             to 32.
+          n_wl_fix_ext (int): Number of wavelengths on red end at which to fix
+                              the extinction curve slope to zero. Defaults
+                              to 2.
+          input_zp (np.ndarray): Central values of input parameters. Defaults
+                                 to None, meaning that central values are
+                                 set to zero.
+          input_scale (np.ndarray): Typical range (like sigma) for each of
+                                    input parameter. Defaults to None, meaning
+                                    that scales are set to unity.
+          l2 (float): l2 penalty to apply to the neural network weights, in
+                      units of chi^2. Defaults to 1, meaning that a chi^2
+                      increase of ~1 will be accepted to obtain a smoother
+                      model.
+          l2_ext_curve (float): l2 penalty to apply to the extinction-curve
+                                model, in units of chi^2. Defaults to 1,
+                                meaning that a chi^2 increase of ~1 will be
+                                accepted to obtain a more well-behaved
+                                extinction curve.
         """
         super(FluxModel, self).__init__(name='flux_model')
 
@@ -77,6 +107,7 @@ class FluxModel(snt.Module):
         self._n_input = n_input
         self._n_hidden = n_hidden
         self._hidden_size = hidden_size
+        self._n_wl_fix_ext = n_wl_fix_ext
 
         # L2 penalty on neural network weights
         self._l2 = tf.Variable(
@@ -125,14 +156,14 @@ class FluxModel(snt.Module):
         #    name='ext_slope'
         #)
 
-        slope_unwise = np.zeros((1,2), dtype='f4')
+        slope_unwise = np.zeros((1,self._n_wl_fix_ext), dtype='f4')
         self._ext_slope_unwise = tf.Variable(
             slope_unwise,
             name='ext_slope_unwise'
-                )
+        )
 
         self._ext_slope = tf.Variable(
-            tf.zeros((1, self._n_output-2)),
+            tf.zeros((1, self._n_output-self._n_wl_fix_ext)),
             name='ext_slope'
         )
 
@@ -153,13 +184,13 @@ class FluxModel(snt.Module):
         R1_guess = R1_guess.astype('float32')
         
         self._ext_bias.assign(R0_guess.reshape(1,-1))
-        self._ext_slope.assign(R1_guess[:-2].reshape(1,-1))
+        self._ext_slope.assign(
+            R1_guess[:R1_guess.size-self._n_wl_fix_ext].reshape(1,-1)
+        )
         
         # Count the total number of weights
         self._n_flux_weights = sum([int(tf.size(l.w)) for l in self._layers])   
         self._n_ext_weights = int(tf.size(self._ext_slope))
-        
-
 
     def predict_intrinsic_ln_flux(self, stellar_type):
         """
@@ -183,9 +214,11 @@ class FluxModel(snt.Module):
         """
         # Run xi through the neural net
         x = tf.expand_dims(xi, 1) # shape = (star, 1)
+        # Concatenate trainable and fixed parts of the extinction slope
         ext_slope_full = tf.concat([self._ext_slope, 
                                     self._ext_slope_unwise], axis=1)
-        ln_ext = ext_slope_full*tf.math.tanh(x) + self._ext_bias # shape = (star, wavelength)
+        # shape = (star, wavelength)
+        ln_ext = ext_slope_full*tf.math.tanh(x) + self._ext_bias
         return ln_ext
 
     def predict_obs_flux(self, stellar_type, xi,
@@ -229,46 +262,59 @@ class FluxModel(snt.Module):
         #print('chi2.shape:', chi2.shape)
         return chi2
 
-    def roughness(self, stellar_type):
+    def roughness(self, stellar_type, reduce_stars=True):
         with tf.GradientTape(watch_accessed_variables=False) as g:
             g.watch(stellar_type)
             ln_flux = self.predict_intrinsic_ln_flux(stellar_type)
         df_dx = g.batch_jacobian(ln_flux, stellar_type) # (star,wl,param)
-        rough_i = tf.reduce_mean(df_dx**2, axis=(1,2)) # (star,)
-        rough = tf.math.reduce_std(rough_i)
+        rough = tf.reduce_mean(df_dx**2, axis=(1,2)) # (star,)
+        if reduce_stars:
+            rough = tf.math.reduce_std(rough)
         return rough
 
-    def penalty(self):
+    def penalty(self, nn_penalty=True, ext_curve_penalty=True):
         l2_sum = 0.
-        # Penalty on stellar model nn weights
-        for layer in self._layers:
-            l2_sum = l2_sum + tf.reduce_sum(layer.w**2)
-        l2_sum = self._l2 * l2_sum / float(self._n_flux_weights)
-        # Penalty on variation of the extinction curve
-        l2_sum = l2_sum + self._l2_ext_curve*tf.reduce_mean(self._ext_slope**2)
-        # Delta wavelength (in units of 10 nm)
-        _, wl0 = tf.split(
-            self._sample_wavelengths,
-            [1,self._n_output-1],
-            axis=0
-        )
-        wl1, _ = tf.split(
-            self._sample_wavelengths,
-            [self._n_output-1,1],
-            axis=0
-        )
-        dwl = (1./wl0 - 1./wl1) * 30250 # 30250 == 550**2 /10. /10.
-        dwl = tf.expand_dims(dwl, axis=0)
-        # Penalty on roughness of extinction curve zero point
-        _, bias0 = tf.split(self._ext_bias, [1,self._n_output-1], axis=1)
-        bias1, _ = tf.split(self._ext_bias, [self._n_output-1,1], axis=1)
-        l2_sum = l2_sum + self._l2_ext_curve*tf.reduce_mean(((bias0-bias1)/dwl)**2)
-        # Penalty on roughness of extinction curve slope
-        dwl_wo_unwise,_ = tf.split(dwl, [self._n_output-3,2], axis=1)
-        _, slope0 = tf.split(self._ext_slope, [1,self._n_output-3], axis=1)
-        slope1, _ = tf.split(self._ext_slope, [self._n_output-3,1], axis=1)
-        l2_sum = l2_sum + self._l2_ext_curve*tf.reduce_mean(((slope0-slope1)/dwl_wo_unwise)**2)
-        return  l2_sum
+
+        if nn_penalty:
+            # Penalty on stellar model nn weights
+            for layer in self._layers:
+                l2_sum = l2_sum + tf.reduce_sum(layer.w**2)
+            l2_sum = self._l2 * l2_sum / float(self._n_flux_weights)
+
+        if ext_curve_penalty:
+            # Penalty on variation of the extinction curve
+            l2_sum = (
+                l2_sum
+              + self._l2_ext_curve*tf.reduce_mean(self._ext_slope**2)
+            )
+            # Delta wavelength (in units of 10 nm)
+            _, wl0 = tf.split(
+                self._sample_wavelengths,
+                [1,self._n_output-1],
+                axis=0
+            )
+            wl1, _ = tf.split(
+                self._sample_wavelengths,
+                [self._n_output-1,1],
+                axis=0
+            )
+            dwl = (1./wl0 - 1./wl1) * 30250 # 30250 == 550**2 /10. /10.
+            dwl = tf.expand_dims(dwl, axis=0)
+            # Penalty on roughness of extinction curve zero point
+            _, bias0 = tf.split(self._ext_bias, [1,self._n_output-1], axis=1)
+            bias1, _ = tf.split(self._ext_bias, [self._n_output-1,1], axis=1)
+            l2_sum = l2_sum + self._l2_ext_curve*tf.reduce_mean(
+                ((bias0-bias1) / dwl)**2
+            )
+            # Penalty on roughness of extinction curve slope
+            dwl_wo_unwise,_ = tf.split(dwl, [-1,self._n_wl_fix_ext], axis=1)
+            _, slope0 = tf.split(self._ext_slope, [1,-1], axis=1)
+            slope1, _ = tf.split(self._ext_slope, [-1,1], axis=1)
+            l2_sum = l2_sum + self._l2_ext_curve*tf.reduce_mean(
+                ((slope0-slope1) / dwl_wo_unwise)**2
+            )
+
+        return l2_sum
 
     def get_sample_wavelengths(self):
         return self._sample_wavelengths.numpy()
@@ -287,6 +333,7 @@ class FluxModel(snt.Module):
         # Inspect checkpoint to find input arguments
         spec = {'n_hidden':-1}
         print('Checkpoint contents:')
+        ext_slope_len = None
         for vname,vshape in tf.train.list_variables(checkpoint_name):
             print(f' * {vname} has shape {vshape}.')
             if vname.startswith('flux_model/_sample_wavelengths/'):
@@ -295,16 +342,23 @@ class FluxModel(snt.Module):
                 spec['n_input'], spec['hidden_size'] = vshape
             if vname.startswith('flux_model/_layers/') and '/w/' in vname:
                 spec['n_hidden'] += 1
+            if vname.startswith('flux_model/_ext_slope/'):
+                _,ext_slope_len = vshape
+
+        if ext_slope_len is not None:
+            spec['n_wl_fix_ext'] = spec['n_output'] - ext_slope_len
                 
         print('Found checkpoint with following specifications:')
         print(json.dumps(spec, indent=2))
 
         # Create flux model
         flux_model = cls(
-            np.linspace(0., 1., spec['n_output']).astype('f4'), # dummy array
-            n_input=spec['n_input'],
-            n_hidden=spec['n_hidden'],
-            hidden_size=spec['hidden_size'],
+            np.linspace(0., 1., spec.pop('n_output')).astype('f4'), # dummy array
+            **spec
+            #n_input=spec['n_input'],
+            #n_hidden=spec['n_hidden'],
+            #hidden_size=spec['hidden_size'],
+            #n_wl_fix_ext=spec['n_wl_fix_ext']
         )
 
         # Restore variables
@@ -312,9 +366,9 @@ class FluxModel(snt.Module):
         checkpoint.restore(checkpoint_name)
 
         print('Loaded the following properties from checkpoint:')
-        for var in (flux_model._l2, flux_model._input_zp,
-                    flux_model._input_iscale,
-                    ):
+        for var in (flux_model._l2, flux_model._l2_ext_curve,
+                    flux_model._input_zp, flux_model._input_iscale,
+                   ):
             print(var)
         print('... in addition to weights and biases.')
 
@@ -345,8 +399,8 @@ def grads_stellar_model(stellar_model,
                         extra_weight,
                         chi2_turnover=tf.constant(20.),        
                         roughness_l2=tf.constant(1.),
-                        model_update = ['stellar_model', 'ext_curve_w', 'ext_curve_b'],
-                        ):
+                        model_update=['stellar_model','ext_curve_w','ext_curve_b'],
+                       ):
     """
     Calculates the gradients of the loss (i.e., chi^2 + regularization)
     w.r.t. the stellar model parameters, for a given batch of stars.
@@ -1347,7 +1401,8 @@ def quick_RV_estimate(flux_model, xi, return_curve=False):
     R = np.exp(flux_model.predict_ln_ext_curve(xi).numpy())
 
     # Interpolate extinction curve to effective wavelengths of B and V
-    lam_BV = np.array([431.8, 533.5]) # in nm
+    #lam_BV = np.array([431.8, 533.5]) # in nm
+    lam_BV = np.array([440., 550.]) # in nm
     sample_wavelengths = flux_model.get_sample_wavelengths()
     idx_BV = np.searchsorted(sample_wavelengths, lam_BV)
     lam1 = sample_wavelengths[idx_BV]
@@ -1361,6 +1416,32 @@ def quick_RV_estimate(flux_model, xi, return_curve=False):
         return R_V, R
 
     return R_V
+
+
+def create_RV_interpolators(stellar_model):
+    # Generate grid points of Rv(xi)
+    xi_range = np.linspace(-5., 5., 1000)
+    Rv_range = quick_RV_estimate(stellar_model, xi_range)
+
+    # Rv(xi)
+    spl = CubicSpline(xi_range, 1/Rv_range)
+    dspl = spl.derivative()
+    Rv_of_xi = lambda xi: 1 / spl(xi)
+    dRv_dxi = lambda xi: -dspl(xi) / spl(xi)**2
+    Rv_err_of_xi = lambda xi, xi_err: dRv_dxi(xi) * xi_err
+
+    # xi(Rv)
+    spl_inv = CubicSpline(1/Rv_range[::-1], xi_range[::-1])
+    xi_of_Rv = lambda Rv: spl_inv(1./Rv)
+
+    f_interp = {
+        'Rv_of_xi': Rv_of_xi,
+        'xi_of_Rv': xi_of_Rv,
+        'dRv_dxi': dRv_dxi,
+        'Rv_err_of_xi': Rv_err_of_xi
+    }
+
+    return f_interp
 
 
 def plot_extinction_curve(flux_model, show_variation=True):

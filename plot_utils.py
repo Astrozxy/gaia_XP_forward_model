@@ -19,7 +19,7 @@ def mollweide_wcs(w, frame):
     coordsys,ctype0,ctype1 = {
         'galactic': ('GAL', 'GLON-MOL', 'GLAT-MOL'),
         'icrs':     ('EQU', 'RA---MOL', 'DEC--MOL')
-    }[plot_frame]
+    }[frame]
     target_header = dict(
         naxis=2,
         naxis1=w,
