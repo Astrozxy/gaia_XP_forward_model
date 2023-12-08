@@ -896,7 +896,8 @@ def plot_roughness(theta, stellar_model):
     for ax in ax_arr.flat:
         ax.xaxis.set_minor_locator(AutoMinorLocator())
         ax.yaxis.set_minor_locator(AutoMinorLocator())
-    fig.suptitle(r'$\mathrm{roughness}$')
+    rough = np.std(roughness_plot)
+    fig.suptitle(rf'$\mathrm{{roughness}} = {rough:.4f}$')
     fig.subplots_adjust(
         left=0.14, right=0.97,
         bottom=0.12, top=0.92,
