@@ -167,7 +167,6 @@ class FluxModel(snt.Module):
             name='ext_slope'
         )
 
-
         self._ext_bias = tf.Variable(
             tf.zeros((1, self._n_output)),
             name='ext_bias'
@@ -199,13 +198,15 @@ class FluxModel(snt.Module):
         to parallax = 1, in whatever units are being used).
         """
         # Normalize the stellar parameters
-        x = (stellar_type - self._input_zp) * self._input_iscale
+        theta = (stellar_type - self._input_zp) * self._input_iscale
         # Run the normalized parameters through the neural net
+        x = theta # shape = (star,param)
         for layer in self._layers[:-1]:
-            x = layer(x)
+            x = layer(x) # shape = (star,neuron)
             x = self._activation(x)
+            x = tf.concat([theta, x], axis=1) # shape = (star,neuron&param)
         # No activation on the final layer
-        flux = self._layers[-1](x)
+        flux = self._layers[-1](x) # shape = (wavelength,)
         return flux
 
     def predict_ln_ext_curve(self, xi):
@@ -271,6 +272,86 @@ class FluxModel(snt.Module):
         if reduce_stars:
             rough = tf.math.reduce_std(rough)
         return rough
+
+    @tf.function
+    def curvature(self, stellar_type, reduce_stars=True):
+        with tf.GradientTape(watch_accessed_variables=False,
+                             persistent=True) as gg:
+            gg.watch(stellar_type)
+            
+            with tf.GradientTape(watch_accessed_variables=False) as g:
+                g.watch(stellar_type)
+                ln_flux = self.predict_intrinsic_ln_flux(stellar_type)
+            
+            df_dx = g.batch_jacobian(ln_flux, stellar_type) # (star,wl,param)
+        
+            # [(star,param) for each wl]
+            df_dx_unstacked = tf.unstack(df_dx, axis=1)
+        
+        f_norm = 0
+        for df_dx_wl in df_dx_unstacked:
+            # (star,param,param)
+            d2f_dx2_wl = gg.batch_jacobian(df_dx_wl, stellar_type)
+            if reduce_stars:
+                # scalar
+                f_norm = f_norm + tf.reduce_mean(d2f_dx2_wl**2)
+            else:
+                # (star,)
+                f_norm = f_norm + tf.reduce_mean(d2f_dx2_wl**2, axis=(1,2))
+
+        return f_norm
+
+    def curvature_fastapprox(self, stellar_type, reduce_stars=True):
+        with tf.GradientTape(watch_accessed_variables=False) as gg:
+            gg.watch(stellar_type)
+            
+            with tf.GradientTape(watch_accessed_variables=False) as g:
+                g.watch(stellar_type)
+                ln_flux = self.predict_intrinsic_ln_flux(stellar_type)
+            
+            df_dx = g.batch_jacobian(ln_flux, stellar_type) # (star,wl,param)
+
+            # Sum over the wavelength axis before taking the 2nd derivative
+            df_dx_reduced = tf.reduce_mean(df_dx**2, axis=1) # (star,param)
+            df_dx_reduced = tf.math.sqrt(df_dx_reduced)
+        
+        # (star,param,param)
+        d2f_dx2 = gg.batch_jacobian(df_dx_reduced, stellar_type)
+            
+        if reduce_stars:
+            f_norm = tf.reduce_mean(d2f_dx2**2) # scalar
+        else:
+            f_norm = tf.reduce_mean(d2f_dx2**2, axis=(1,2)) # (star,)
+
+        return f_norm
+
+    def curvature_roughness(self, stellar_type, reduce_stars=True):
+        with tf.GradientTape(watch_accessed_variables=False) as gg:
+            gg.watch(stellar_type)
+            
+            with tf.GradientTape(watch_accessed_variables=False) as g:
+                g.watch(stellar_type)
+                ln_flux = self.predict_intrinsic_ln_flux(stellar_type)
+            
+            df_dx = g.batch_jacobian(ln_flux, stellar_type) # (star,wl,param)
+
+            # Sum over the wavelength axis before taking the 2nd derivative
+            df_dx_reduced2 = tf.reduce_mean(df_dx**2, axis=1) # (star,param)
+            df_dx_reduced = tf.math.sqrt(df_dx_reduced2)
+        
+        # (star,param,param)
+        d2f_dx2 = gg.batch_jacobian(df_dx_reduced, stellar_type)
+            
+        if reduce_stars:
+            # scalar
+            curve = tf.reduce_mean(d2f_dx2**2)
+            rough = tf.math.reduce_std(df_dx_reduced2)
+        else:
+            # (star,)
+            curve = tf.reduce_mean(d2f_dx2**2, axis=(1,2))
+            rough = tf.math.reduce_std(df_dx_reduced2, axis=1)
+
+        return curve, rough
 
     def penalty(self, nn_penalty=True, ext_curve_penalty=True):
         l2_sum = 0.
@@ -398,8 +479,10 @@ def grads_stellar_model(stellar_model,
                         flux_obs, flux_sqrticov,
                         extra_weight,
                         chi2_turnover=tf.constant(20.),        
-                        roughness_l2=tf.constant(1.),
-                        model_update=['stellar_model','ext_curve_w','ext_curve_b'],
+                        roughness_l2=tf.constant(2.),
+                        curvature_l2=tf.constant(2.),
+                        model_update=['stellar_model',
+                                      'ext_curve_w','ext_curve_b'],
                        ):
     """
     Calculates the gradients of the loss (i.e., chi^2 + regularization)
@@ -452,8 +535,9 @@ def grads_stellar_model(stellar_model,
         # Add in penalty (generally, for model complexity)
         loss = chi2 + stellar_model.penalty()
 
-        # Penalty on gradients of model (similar to model discontinuity)
-        loss = loss + roughness_l2 * stellar_model.roughness(stellar_type)
+        # Penalties on gradients & curvature of model
+        curve,rough = stellar_model.curvature_roughness(stellar_type)
+        loss = loss + curvature_l2*curve + roughness_l2*rough
 
     # Calculate d(loss)/d(variables)
     grads = g.gradient(loss, variables)
@@ -607,8 +691,9 @@ def train_stellar_model(stellar_model,
                         batch_size=128, n_epochs=32,
                         lr_stars_init=1e-3,
                         lr_model_init=1e-4,
-                        model_update=['stellar_model','ext_curve_w','ext_curve_b'],
-                        var_update=['atm','E','plx','xi'],
+                        model_update=['stellar_model',
+                                      'ext_curve_w','ext_curve_b'],
+                        var_update=['atm','E','plx','xi']
                        ):
     
     # Make arrays to hold estimated stellar types
@@ -647,7 +732,7 @@ def train_stellar_model(stellar_model,
             ext_b, plx_b,
             flux_b, flux_sqrticov_b,
             extra_weight_b,
-            model_update=model_update, 
+            model_update=model_update
         )
         grads_clipped, grads_norm = tf.clip_by_global_norm(
             grads, 1000.
@@ -942,7 +1027,7 @@ class GaussianMixtureModel(snt.Module):
             n_components=self._n_components,
             weight_concentration_prior=0.25/self._n_components,
             reg_covar=1e-3,
-            max_iter=2048,
+            max_iter=4096,
             n_init=1,
             verbose=2
         )
