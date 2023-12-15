@@ -414,7 +414,8 @@ def hist2d_reduce(x, y, c, xlim=None, ylim=None, ax=None,
     return im
 
 
-def plot_loss(train_loss_hist, val_loss_hist=None, lr_hist=None, smoothing="auto"):
+def plot_loss(train_loss_hist, val_loss_hist=None, lr_hist=None,
+              smoothing="auto"):
     """
     Plots the loss history for the training set (train_loss_hist) and validation set
     (val_loss_hist) and marks where the learning rate dropped (based on lr_hist)
