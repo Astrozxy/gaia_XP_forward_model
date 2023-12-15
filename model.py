@@ -691,6 +691,7 @@ def train_stellar_model(stellar_model,
                         batch_size=512, n_epochs=32,
                         lr_stars_init=1e-3,
                         lr_model_init=1e-4,
+                        lr_n_drops=2,
                         model_update=['stellar_model',
                                       'ext_curve_w','ext_curve_b'],
                         var_update=['atm','E','plx','xi']
@@ -712,13 +713,13 @@ def train_stellar_model(stellar_model,
     batches, n_batches = get_batch_iterator(idx_train, batch_size, n_epochs)
 
     # Optimizer for stellar model and extinction curve
-    n_segments = 2
+    n_segments = lr_n_drops + 1
     lr_model = keras.optimizers.schedules.PiecewiseConstantDecay(
         [int(n_batches*k/n_segments) for k in range(1,n_segments)],
         [lr_model_init*(0.1**k) for k in range(n_segments)]
     )
     opt_model = keras.optimizers.SGD(learning_rate=lr_model, momentum=0.9)
-    #opt_model = keras.optimizers.Adam(learning_rate=1e-4)
+    #opt_model = keras.optimizers.Adam(learning_rate=lr_model)
 
     @tf.function
     def grad_step_stellar_model(type_b, xi_b, ext_b, 
@@ -744,7 +745,6 @@ def train_stellar_model(stellar_model,
     # Optimizer for stellar parameters.
     # No momentum, because different stellar parameters fit each batch,
     # so direction of last step is irrelevant.
-    n_segments = 2
     lr_stars = keras.optimizers.schedules.PiecewiseConstantDecay(
         [int(n_batches*k/n_segments) for k in range(1,n_segments)],
         [lr_stars_init*(0.1**k) for k in range(n_segments)]
@@ -795,13 +795,15 @@ def train_stellar_model(stellar_model,
 
     model_loss_hist = []
     stellar_loss_hist = []
+    model_lr_hist = []
+    stellar_lr_hist = []
     chi_w1_hist = []
     chi_w2_hist = []
     slope_record = []
     bias_record = []
 
-    pbar = tqdm(batches, total=n_batches)
-    for b in pbar:
+    pbar = tqdm(enumerate(batches), total=n_batches)
+    for i,b in pbar:
         # Load in data for this batch
         idx = b.numpy()
 
@@ -869,6 +871,7 @@ def train_stellar_model(stellar_model,
             chi_w2_hist.append(np.mean(chi_w2))
             slope_record.append(stellar_model._ext_slope.numpy()[0])
             bias_record.append(stellar_model._ext_bias.numpy()[0])
+            model_lr_hist.append(float(lr_model(i).numpy()))
             #pbar_disp['mod_lr'] = opt_model._decayed_lr(tf.float32).numpy()
 
         # Take a step in the stellar paramters (for this batch)
@@ -885,6 +888,7 @@ def train_stellar_model(stellar_model,
             st_loss = float(np.median(loss.numpy()))
             stellar_loss_hist.append(st_loss)
             pbar_disp['st_loss'] = st_loss
+            stellar_lr_hist.append(float(lr_stars(i).numpy()))
             #pbar_disp['st_lr'] = opt_st_params._decayed_lr(tf.float32).numpy()
 
             if np.isnan(st_loss):
@@ -932,6 +936,7 @@ def train_stellar_model(stellar_model,
         ret['chi_w2'] = chi_w2_hist
         ret['ext_slope'] = np.vstack(slope_record)
         ret['ext_bias'] = np.vstack(bias_record)
+        ret['model_lr'] = model_lr_hist
 
     if optimize_stellar_params:
         ret['stellar_loss'] = stellar_loss_hist
@@ -941,6 +946,7 @@ def train_stellar_model(stellar_model,
         d_train['plx_est'] = np.exp(ln_plx_est)
         ret['chi_w1'] = chi_w1_hist
         ret['chi_w2'] = chi_w2_hist
+        ret['stellar_lr'] = stellar_lr_hist
 
     return ret
 

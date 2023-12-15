@@ -1,0 +1,198 @@
+{
+  "model": {
+    "hidden_size": 32,
+    "l2": 5.0,
+    "l2_ext_curve": 0.5
+  },
+  "stages": [
+    {
+      "selection": {
+        "hq": true
+      },
+      "weighting": {
+        "prior": true
+      },
+      "train": {
+        "n_epochs": 512,
+        "lr_model_init": 1.0e-4,
+        "lr_n_drops": 2,
+        "optimize_stellar_model": true,
+        "optimize_stellar_params": false,
+        "model_update": ["stellar_model","ext_curve_b"]
+      }
+    },
+    {
+      "selection": {
+        "hq": true
+      },
+      "weighting": {
+        "prior": true,
+        "xi_hist": true
+      },
+      "train": {
+        "n_epochs": 512,
+        "lr_model_init": 1.0e-4,
+        "lr_stars_init": 1.0e-4,
+        "optimize_stellar_model": true,
+        "optimize_stellar_params": true,
+        "model_update": ["stellar_model","ext_curve_b"],
+        "var_update": ["atm","E","plx"]
+      }
+    },
+    {
+      "selection": {
+        "large_E_uncertainty": true
+      },
+      "weighting": {},
+      "train": {
+        "n_epochs": 512,
+        "lr_stars_init": 1.0e-2,
+        "optimize_stellar_model": false,
+        "optimize_stellar_params": true,
+        "var_update": ["E"]
+      }
+    },
+    {
+      "selection": {},
+      "weighting": {},
+      "train": {
+        "n_epochs": 512,
+        "lr_stars_init": 1.0e-4,
+        "optimize_stellar_model": false,
+        "optimize_stellar_params": true,
+        "var_update": ["atm","E","plx"]
+      }
+    },
+    {
+      "selection": {
+        "hq": true,
+        "remove_param_outliers": true,
+        "remove_flux_outliers": true
+      },
+      "weighting": {
+        "prior": true
+      },
+      "train": {
+        "n_epochs": 512,
+        "lr_model_init": 1.0e-4,
+        "lr_stars_init": 1.0e-4,
+        "optimize_stellar_model": true,
+        "optimize_stellar_params": true,
+        "model_update": ["stellar_model","ext_curve_b"],
+        "var_update": ["atm","E","plx"]
+      }
+    },
+    {
+      "selection": {
+        "hq": true,
+        "E_min": 0.1
+      },
+      "weighting": {
+        "prior": true
+      },
+      "train": {
+        "n_epochs": 512,
+        "lr_stars_init": 1.0e-4,
+        "optimize_stellar_model": false,
+        "optimize_stellar_params": true,
+        "var_update": ["E","xi","plx"]
+      }
+    },
+    {
+      "selection": {
+        "hq": true,
+        "E_min": 0.1
+      },
+      "weighting": {
+        "prior": true,
+        "xi_hist": true
+      },
+      "train": {
+        "n_epochs": 512,
+        "lr_model_init": 1.0e-4,
+        "lr_stars_init": 1.0e-4,
+        "optimize_stellar_model": true,
+        "optimize_stellar_params": true,
+        "model_update": ["ext_curve_b"],
+        "var_update": ["E","xi"]
+      }
+    },
+    {
+      "selection": {
+        "hq": true,
+        "E_min": 0.1
+      },
+      "weighting": {
+        "prior": true,
+        "xi_hist": true
+      },
+      "train": {
+        "n_epochs": 512,
+        "lr_model_init": 1.0e-4,
+        "lr_stars_init": 1.0e-4,
+        "optimize_stellar_model": true,
+        "optimize_stellar_params": true,
+        "model_update": ["ext_curve_w"],
+        "var_update": ["E","xi"]
+      }
+    },
+    {
+      "selection": {
+        "hq": true,
+        "E_min": 0.1
+      },
+      "weighting": {
+        "prior": true,
+        "xi_hist": true
+      },
+      "train": {
+        "n_epochs": 512,
+        "lr_model_init": 1.0e-4,
+        "lr_stars_init": 1.0e-4,
+        "optimize_stellar_model": true,
+        "optimize_stellar_params": true
+      }
+    },
+    {
+      "selection": {},
+      "weighting": {},
+      "train": {
+        "n_epochs": 512,
+        "lr_stars_init": 1.0e-4,
+        "optimize_stellar_model": false,
+        "optimize_stellar_params": true
+      }
+    },
+    {
+      "selection": {
+        "remove_param_outliers": true,
+        "remove_flux_outliers": true
+      },
+      "weighting": {
+        "prior": true,
+        "xi_hist": true
+      },
+      "train": {
+        "n_epochs": 512,
+        "lr_model_init": 1.0e-4,
+        "lr_stars_init": 1.0e-4,
+        "optimize_stellar_model": true,
+        "optimize_stellar_params": true,
+        "model_update": ["stellar_model","ext_curve_b"]
+      }
+    },
+    {
+      "selection": {},
+      "weighting": {},
+      "train": {
+        "n_epochs": 512,
+        "lr_stars_init": 1.0e-4,
+        "optimize_stellar_model": false,
+        "optimize_stellar_params": true
+      }
+    }
+  ],
+  "validation": {
+    "n_epochs": 1024
+  }
+}
