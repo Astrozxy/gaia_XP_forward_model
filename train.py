@@ -164,7 +164,7 @@ def weigh_prior(stellar_type_prior, d_train, scale=1., max_upsampling=5.):
     return weight_per_star.astype('f4')
 
 
-def train(data_fname, output_dir, stage=0, thin=1, E_low=0.1, n_epochs=256):
+def train(data_fname, output_dir, stage=0, thin=1, E_low=0.1, n_epochs=512):
     '''
     Stage 0: Train the stellar model, using universal extinction curve.
     Stage 1: Train the extinction model with hqlE stars, using initial guess of 
@@ -193,7 +193,6 @@ def train(data_fname, output_dir, stage=0, thin=1, E_low=0.1, n_epochs=256):
         return os.path.join(output_dir, fn)
     
     if stage == 0:        
-        
         # Stage 0, begin without initial stellar model
         print(f'Loading training data from {data_fname} ...')
         d_train, d_val, sample_wavelengths = load_training_data(
@@ -307,6 +306,7 @@ def train(data_fname, output_dir, stage=0, thin=1, E_low=0.1, n_epochs=256):
             idx_train=idx_hq,
             optimize_stellar_model=True,
             optimize_stellar_params=False,
+            lr_model_init=1e-4,
             batch_size=batch_size,
             n_epochs=n_epochs,
             model_update=['stellar_model','ext_curve_b'],
@@ -340,8 +340,8 @@ def train(data_fname, output_dir, stage=0, thin=1, E_low=0.1, n_epochs=256):
             idx_train=idx_hq,
             optimize_stellar_model=True,
             optimize_stellar_params=True,
-            lr_model_init=1e-7*nscale,
-            lr_stars_init=1e-5*nscale,
+            lr_model_init=1e-5*nscale,
+            lr_stars_init=1e-4*nscale,
             batch_size=batch_size,
             n_epochs=n_epochs,
             model_update=['stellar_model','ext_curve_b'],
@@ -443,7 +443,7 @@ def train(data_fname, output_dir, stage=0, thin=1, E_low=0.1, n_epochs=256):
             idx_train=np.where(idx_good)[0],
             optimize_stellar_model=True,
             optimize_stellar_params=True,
-            lr_model_init=1e-7*nscale,
+            lr_model_init=1e-5*nscale,
             lr_stars_init=1e-5*nscale,
             batch_size=batch_size,
             n_epochs=n_epochs,
@@ -471,7 +471,7 @@ def train(data_fname, output_dir, stage=0, thin=1, E_low=0.1, n_epochs=256):
         np.save(full_fn('index/idx_good_wo_Rv.npy'), idx_good)
         stellar_model.save(full_fn('models/flux/xp_spectrum_model_final'))
         save_as_h5(d_train, full_fn('data/dtrain_final_wo_Rv.h5'))
-        save_as_h5(ret, full_fn('hist_loss/final_wo_Rv.h5'))
+        #save_as_h5(ret, full_fn('hist_loss/final_wo_Rv.h5'))
 
     if stage<2:
          

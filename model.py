@@ -688,7 +688,7 @@ def train_stellar_model(stellar_model,
                         idx_train=None,
                         optimize_stellar_model=True,
                         optimize_stellar_params=False,
-                        batch_size=128, n_epochs=32,
+                        batch_size=512, n_epochs=32,
                         lr_stars_init=1e-3,
                         lr_model_init=1e-4,
                         model_update=['stellar_model',
@@ -712,10 +712,10 @@ def train_stellar_model(stellar_model,
     batches, n_batches = get_batch_iterator(idx_train, batch_size, n_epochs)
 
     # Optimizer for stellar model and extinction curve
-    n_drops = 4
+    n_segments = 2
     lr_model = keras.optimizers.schedules.PiecewiseConstantDecay(
-        [int(n_batches*k/n_drops) for k in range(1,n_drops)],
-        [lr_model_init*(0.1**k) for k in range(n_drops)]
+        [int(n_batches*k/n_segments) for k in range(1,n_segments)],
+        [lr_model_init*(0.1**k) for k in range(n_segments)]
     )
     opt_model = keras.optimizers.SGD(learning_rate=lr_model, momentum=0.9)
     #opt_model = keras.optimizers.Adam(learning_rate=1e-4)
@@ -744,10 +744,10 @@ def train_stellar_model(stellar_model,
     # Optimizer for stellar parameters.
     # No momentum, because different stellar parameters fit each batch,
     # so direction of last step is irrelevant.
-    n_drops = 4
+    n_segments = 2
     lr_stars = keras.optimizers.schedules.PiecewiseConstantDecay(
-        [int(n_batches*k/n_drops) for k in range(1,n_drops)],
-        [lr_stars_init*(0.1**k) for k in range(n_drops)]
+        [int(n_batches*k/n_segments) for k in range(1,n_segments)],
+        [lr_stars_init*(0.1**k) for k in range(n_segments)]
     )
     opt_st_params = keras.optimizers.SGD(learning_rate=lr_stars, momentum=0.)
 
@@ -920,7 +920,6 @@ def train_stellar_model(stellar_model,
             xi_est[idx] = xi_est_batch.numpy()
             ln_ext_est[idx] = ln_ext_est_batch.numpy()
             ln_plx_est[idx] = ln_plx_est_batch.numpy()
-
 
         # Display losses in progress bar
         pbar.set_postfix(pbar_disp)
