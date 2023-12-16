@@ -1193,51 +1193,53 @@ def execute_recipe(data_fname, output_dir, recipe, thin=1):
                 stellar_model = FluxModel.load(fn_model+'-1')
 
             # Skip to next step
-            continue
+            #continue
 
-        # Selection
-        print('Determining selection ...')
-        idx_select = get_selection(
-            d_train,
-            stellar_model,
-            stage.get('selection',{})
-        )
+        else:
+            print('Determining selection ...')
+            idx_select = get_selection(
+                d_train,
+                stellar_model,
+                stage.get('selection',{})
+            )
 
-        # Weights
-        print('Calculating weights ...')
-        weights_per_star = calc_weights(
-            d_train, idx_select,
-            stellar_type_prior,
-            stage.get('weighting',{})
-        )
+            # Weights
+            print('Calculating weights ...')
+            weights_per_star = calc_weights(
+                d_train, idx_select,
+                stellar_type_prior,
+                stage.get('weighting',{})
+            )
 
-        # Plot training data
-        print('Plotting training data ...')
-        title = (
-            r'$\mathrm{Training\ distribution}'
-          + r'\ (\mathtt{{ {} }})$'.format(step_name.replace('_',r'\_'))
-        )
-        plot_param_histograms_1d(
-            d_train['stellar_type'][idx_select],
-            weights_per_star[idx_select],
-            title,
-            full_fn(f'plots/training_stellar_type_hist1d_{step_name}')
-        )
+            # Plot training data
+            print('Plotting training data ...')
+            title = (
+                r'$\mathrm{Training\ distribution}'
+              + r'\ (\mathtt{{ {} }})$'.format(step_name.replace('_',r'\_'))
+            )
+            plot_param_histograms_1d(
+                d_train['stellar_type'][idx_select],
+                weights_per_star[idx_select],
+                title,
+                full_fn(f'plots/training_stellar_type_hist1d_{step_name}')
+            )
 
-        # Train
-        train_kwargs = get_default_args(train_stellar_model)
-        train_kwargs.update(stage.get('train',{}))
-        train_kwargs.update(dict(idx_train=idx_select))
-        train_hist = train_stellar_model(
-            stellar_model,
-            d_train,
-            weights_per_star,
-            **train_kwargs
-        )
+            # Train
+            train_kwargs = get_default_args(train_stellar_model)
+            train_kwargs.update(stage.get('train',{}))
+            train_kwargs.update(dict(idx_train=idx_select))
+            train_hist = train_stellar_model(
+                stellar_model,
+                d_train,
+                weights_per_star,
+                **train_kwargs
+            )
 
-        # Checkpoint and make plots
-        save_as_h5(train_hist, full_fn(f'hist_loss/hist_{step_name}.h5'))
+            # Checkpoint and make plots
+            save_as_h5(train_hist, full_fn(f'hist_loss/hist_{step_name}.h5'))
 
+        
+        train_hist = load_h5(full_fn(f'hist_loss/hist_{step_name}.h5'))
         if train_kwargs['optimize_stellar_params']:
             # Save stellar parameter estimates
             save_param_est(d_train, idx_select, fn_param)
