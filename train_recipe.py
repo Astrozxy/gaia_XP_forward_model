@@ -12,6 +12,7 @@ from tqdm import tqdm
 import h5py
 import os
 import os.path
+import json
 
 from xp_utils import XPSampler, sqrt_icov_eigen, calc_invs_eigen
 from utils import batch_apply_tf
@@ -43,6 +44,13 @@ def load_training_data(fname, validation_frac=0.2, seed=1, thin=1):
     ]
     for k in f4_keys:
         d[k] = d[k].astype('f4')
+
+    # Initial guess of xi (extinction curve parameter)
+    d['xi'] = np.zeros(len(d['flux']), dtype='f4')
+
+    # Initialize the parameter estimates at their measured (input) values
+    for key in ('stellar_type', 'xi', 'stellar_ext', 'plx'):
+        d[f'{key}_est'] = d[key].copy()
 
     # Warn about NaNs
     check_nan_keys = [
@@ -79,8 +87,8 @@ def load_training_data(fname, validation_frac=0.2, seed=1, thin=1):
     return d_train, d_val, sample_wavelengths
 
 
-def down_sample_weighing(x_ini, all_x, bin_edges,
-                         n_bins=100, max_upsampling=5.):
+def down_sample_weighting(x_ini, bin_edges,
+                          n_bins=100, max_upsampling=5.):
     # Use high-Extinction stars for empirical distribution of xi
     bin_edges = np.hstack([[-np.inf], bin_edges, [np.inf]])
     
@@ -94,8 +102,7 @@ def down_sample_weighing(x_ini, all_x, bin_edges,
     weights_per_bin[-1] = 0
 
     # Weigh all stars by the inverse of density of the ini sample
-    bin_indices_all = np.digitize(all_x, bin_edges)
-    weights_per_star = weights_per_bin[bin_indices_all]
+    weights_per_star = weights_per_bin[bin_indices]
 
     # Normalize the weights per star by median value
     weights_per_star /= (1e-5 + np.median(weights_per_star))
@@ -139,7 +146,51 @@ def plot_param_histograms_1d(stellar_type, weights, title, fname):
 
     fig.savefig(fname)
     plt.close(fig)
-    
+
+
+def plot_extcurve_hist(hist_loss, key='ext_bias', lr_hist=None):
+    label_wl = [rf'${x:.0f}\,\mathrm{{nm}}$' for x in np.arange(392.,992.1,10)]
+    label_wl += [rf'${l}$' for l in ['J','H','K_s','W1','W2']]
+    idx_wl_plot = np.hstack([np.arange(0,61,20), np.arange(-5,0)])
+    n_steps = hist_loss[key].shape[0]
+
+    norm = Normalize(0, len(idx_wl_plot)-1)
+    cmap = plt.get_cmap('coolwarm')
+
+    fig,ax = plt.subplots(1,1, figsize=(6,6))
+
+    x = np.arange(n_steps)
+
+    for k,i in enumerate(idx_wl_plot):
+        y = hist_loss[key][:,i]
+        dy = y - y[0]
+        ax.plot(x, dy, c=cmap(norm(k)))
+        ax.text(n_steps+0.01*n_steps, dy[-1], label_wl[i],
+                ha='left', va='center', fontsize=6)
+
+    # Detect discrete drops in learning rate
+    if lr_hist is not None:
+        lr_hist = np.array(lr_hist)
+        lr_ratio = lr_hist[lr_hist > 0][1:] / lr_hist[lr_hist > 0][:-1]
+        n_drop = np.where(lr_ratio < 0.95)[0]
+        for k in n_drop:
+            ax.axvline(k, c='k', alpha=0.1, ls='--')
+
+    #for i in range(1,4):
+    #    xx = i*n_steps/4
+    #    ax.axvline(xx, c='k', alpha=0.1)
+
+    ax.set_xlabel(r'$t\ (\mathrm{training\ step})$')
+
+    label = r'\mathtt{{ {} }}'.format(key.replace(r'_',r'\_'))
+    ax.set_ylabel(rf'${label}\left(t\right) - {label}\left(0\right)$')
+
+    ax.set_xlim(right=1.1*n_steps)
+
+    ax.grid(True, which='major', alpha=0.1)
+
+    return fig
+
 
 def soft_clip_weights(weights, max_upsampling):
     return weights / (1 + weights/max_upsampling)
@@ -205,9 +256,9 @@ def train(data_fname, output_dir, stage=0, thin=1, E_low=0.1, n_epochs=512):
 
         plot_training_data(d_train, output_dir=output_dir)
         
-        # Initial guess of xi
-        d_train['xi'] = np.zeros(n_train, dtype='f4')
-        d_val['xi'] = np.zeros(n_val, dtype='f4')
+        ## Initial guess of xi
+        #d_train['xi'] = np.zeros(n_train, dtype='f4')
+        #d_val['xi'] = np.zeros(n_val, dtype='f4')
 
         save_as_h5(d_val, full_fn('data/d_val.h5'))
         save_as_h5(d_train, full_fn('data/d_train.h5'))
@@ -1005,6 +1056,396 @@ def plot_training_data(d, output_dir=''):
     plt.close(fig)
 
 
+def save_train_val_split(d_train, d_val, fname):
+    with h5py.File(fname, 'w') as f:
+        f['train/idx'] = d_train['shuffle_idx']
+        f['train/gdr3_source_id'] = d_train['gdr3_source_id']
+        f['val/idx'] = d_val['shuffle_idx']
+        f['val/gdr3_source_id'] = d_val['gdr3_source_id']
+
+
+def check_train_val_split(d_train, d_val, fname):
+    with h5py.File(fname, 'r') as f:
+        assert np.all(f['train/idx'][:]==d_train['shuffle_idx'])
+        assert np.all(f['train/gdr3_source_id'][:]==d_train['gdr3_source_id'])
+        assert np.all(f['val/idx'][:]==d_val['shuffle_idx'])
+        assert np.all(f['val/gdr3_source_id'][:]==d_val['gdr3_source_id'])
+
+
+def execute_recipe(data_fname, output_dir, recipe, thin=1):
+    # Ensure that output directories exist
+    path_list = [
+        'data', 'plots',
+        'models/prior', 'models/flux',
+        'index', 'hist_loss'
+    ]
+    for p in path_list:
+        Path(os.path.join(output_dir,p)).mkdir(exist_ok=True, parents=True)
+
+    # Helper function: Append base directory to filename
+    def full_fn(fn):
+        return os.path.join(output_dir, fn)
+
+    # Load training data
+    print(f'Loading training data from {data_fname} ...')
+    d_train, d_val, sample_wavelengths = load_training_data(
+        data_fname,
+        thin=thin,
+        seed=0
+    )
+    n_train, n_val = [len(d['plx']) for d in (d_train,d_val)]
+    print(f'Loaded {n_train} ({n_val}) training (validation) sources.')
+    # Save/check the train/validation split
+    fn_split = full_fn('index/train_val_split.h5')
+    if os.path.exists(fn_split):
+        try:
+            check_train_val_split(d_train, d_val, fn_split)
+        except AssertionError as err:
+            print('Train/validation data does not match checkpoint.')
+            raise err
+    else:
+        save_train_val_split(d_train, d_val, fn_split)
+        print('Plotting training data ...')
+        plot_training_data(d_train, output_dir=output_dir)
+
+    # Infer dimensionality of stellar type
+    n_stellar_params = d_train['stellar_type'].shape[1]
+
+    # Generate GMM prior
+    fn_prior = full_fn('models/prior/gmm_prior')
+    if os.path.exists(fn_prior+'-1.index'):
+        print('Loading existing Gaussian Mixture Model prior ...')
+        stellar_type_prior = GaussianMixtureModel.load(fn_prior+'-1')
+    else:
+        print('Generating Gaussian Mixture Model prior on stellar type ...')
+        stellar_type_prior = GaussianMixtureModel(n_stellar_params,
+                                                  n_components=16)
+        # Use at most this many stars to learn GMM prior
+        n_prior_max = 1024*256 
+        stellar_type_prior.fit(d_train['stellar_type'][:n_prior_max])
+        stellar_type_prior.save(fn_prior)
+        print('  -> Plotting prior ...')
+        plot_gmm_prior(stellar_type_prior, base_path=output_dir)
+
+    # Generate tracks through stellar parameter space
+    tracks_fn = full_fn('models/prior/tracks.h5')
+    if os.path.exists(tracks_fn):
+        print('Loading tracks through stellar parameter space ...')
+        atm_tracks = model.load_stellar_type_tracks(tracks_fn)
+    else:
+        print('Generating tracks through stellar parameter space ...')
+        atm_tracks = model.calculate_stellar_type_tracks(stellar_type_prior)
+        model.save_stellar_type_tracks(atm_tracks, tracks_fn)
+        print('Plotting tracks through stellar parameter space ...')
+        for track in atm_tracks:
+            plot_gmm_prior(
+                stellar_type_prior,
+                base_path=output_dir,
+                overlay_track=track
+            )
+    
+    # Initialize flux model
+    print('Creating flux model ...')
+    model_kwargs = recipe.get('model',{})
+    print(f'Model properties: {model_kwargs}')
+    p_low,p_high = np.percentile(
+        d_train['stellar_type'],
+        [16.,84.],
+        axis=0
+    )
+    stellar_model = FluxModel(
+        sample_wavelengths, n_input=n_stellar_params,
+        input_zp=np.median(d_train['stellar_type'],axis=0),
+        input_scale=0.5*(p_high-p_low),
+        **model_kwargs
+    )
+
+    # Carry out recipe
+    print(f'Recipe has {len(recipe["stages"])} stages.')
+
+    for i,stage in enumerate(recipe['stages']):
+        step_name = f'step_{i:02d}'
+        fn_model = full_fn(f'models/flux/xp_spectrum_model_{step_name}')
+        fn_param = full_fn(f'data/stellar_params_{step_name}.h5')
+
+        print('')
+        print('='*79)
+        print(f'Stage: {step_name}')
+        print('='*79)
+        print('')
+        print('Settings:')
+        print(json.dumps(stage, indent=2))
+        print('')
+
+        # Look for existing checkpoint
+        fn_completed = full_fn(f'data/completed_{step_name}')
+        if os.path.exists(fn_completed):
+            print(f'{fn_completed} found. Assume {step_name} completed.')
+
+            # Load stellar parameter estimates
+            if os.path.exists(fn_param):
+                print(f'Loading stellar parameters: {fn_param}')
+                load_param_est(d_train, fn_param)
+
+            # Load model
+            if os.path.exists(fn_model+'-1.index'):
+                print(f'Loading model: {fn_model}')
+                stellar_model = FluxModel.load(fn_model+'-1')
+
+            # Skip to next step
+            continue
+
+        # Selection
+        print('Determining selection ...')
+        idx_select = get_selection(
+            d_train,
+            stellar_model,
+            stage.get('selection',{})
+        )
+
+        # Weights
+        print('Calculating weights ...')
+        weights_per_star = calc_weights(
+            d_train, idx_select,
+            stellar_type_prior,
+            stage.get('weighting',{})
+        )
+
+        # Plot training data
+        print('Plotting training data ...')
+        title = (
+            r'$\mathrm{Training\ distribution}'
+          + r'\ (\mathtt{{ {} }})$'.format(step_name.replace('_',r'\_'))
+        )
+        plot_param_histograms_1d(
+            d_train['stellar_type'][idx_select],
+            weights_per_star[idx_select],
+            title,
+            full_fn(f'plots/training_stellar_type_hist1d_{step_name}')
+        )
+
+        # Train
+        train_kwargs = get_default_args(train_stellar_model)
+        train_kwargs.update(stage.get('train',{}))
+        train_kwargs.update(dict(idx_train=idx_select))
+        train_hist = train_stellar_model(
+            stellar_model,
+            d_train,
+            weights_per_star,
+            **train_kwargs
+        )
+
+        # Checkpoint and make plots
+        save_as_h5(train_hist, full_fn(f'hist_loss/hist_{step_name}.h5'))
+
+        if train_kwargs['optimize_stellar_params']:
+            # Save stellar parameter estimates
+            save_param_est(d_train, idx_select, fn_param)
+
+            # Plot stellar loss history
+            fig = plot_utils.plot_loss(train_hist['stellar_loss'],
+                                       lr_hist=train_hist['stellar_lr'])
+            fig.savefig(full_fn(f'plots/loss_stellar_{step_name}'))
+            plt.close(fig)
+
+            # Plot R(V) histogram
+            if 'xi' in train_kwargs['var_update']:
+                fig,_ = model.plot_RV_histogram(stellar_model, d_train)
+                fig.savefig(full_fn(f'plots/Rv_histogram_{step_name}'))
+                plt.close(fig)
+
+        if train_kwargs['optimize_stellar_model']:
+            stellar_model.save(fn_model)
+
+            # Plot model loss history
+            fig = plot_utils.plot_loss(train_hist['model_loss'],
+                                       lr_hist=train_hist['model_lr'])
+            fig.savefig(full_fn(f'plots/loss_model_{step_name}'))
+            plt.close(fig)
+
+            # Plot extinction curve
+            ext_curve_b = ('ext_curve_b' in train_kwargs['model_update'])
+            ext_curve_w = ('ext_curve_w' in train_kwargs['model_update'])
+
+            if ext_curve_b or ext_curve_w:
+                print('Plotting extinction curve ...')
+                fig,_ = model.plot_extinction_curve(stellar_model,
+                                                    show_variation=ext_curve_w)
+                fig.savefig(full_fn(f'plots/extinction_curve_{step_name}'))
+                plt.close(fig)
+
+            if ext_curve_b:
+                fig = plot_extcurve_hist(train_hist, key='ext_bias',
+                                         lr_hist=train_hist['model_lr'])
+                fig.savefig(full_fn(f'plots/hist_ext_bias_{step_name}'))
+                plt.close(fig)
+
+            if ext_curve_w:
+                fig = plot_extcurve_hist(train_hist, key='ext_slope',
+                                         lr_hist=train_hist['model_lr'])
+                fig.savefig(full_fn(f'plots/hist_ext_slope_{step_name}'))
+                plt.close(fig)
+
+            if 'stellar_model' in train_kwargs['model_update']:
+                # Plot model roughness
+                print('Plotting model roughness ...')
+                fig,_ = plot_roughness(d_train['stellar_type'], stellar_model)
+                fig.savefig(full_fn(f'plots/roughness_{step_name}'))
+                plt.close(fig)
+
+                # Plot stellar model
+                print('Plotting stellar model ...')
+                for i,track in enumerate(atm_tracks):
+                    fig,ax = model.plot_stellar_model(stellar_model, track)
+                    fig.savefig(full_fn(
+                        f'plots/stellar_model_{step_name}_track{i}'
+                    ))
+                    plt.close(fig)
+
+        # Mark this stage as completed by creating an empty file
+        with open(fn_completed, 'w') as f:
+            f.write('')
+
+    # Save training-set stellar parameter estimates
+    fn_param = full_fn(f'data/stellar_params_train.h5')
+    idx_select = np.arange(n_train, dtype='i8')
+    save_param_est(d_train, idx_select, fn_param)
+
+    # Learn validation set parameters
+    print('Optimizing stellar parameters in validation set ...')
+    val_kwargs = get_default_args(train_stellar_model)
+    val_kwargs.update({
+        'optimize_stellar_model': False,
+        'var_update': ['atm','E','plx','xi']
+    })
+    val_kwargs.update(recipe.get('validation',{}))
+    weights_per_star = np.ones(n_val, dtype='f4')
+    ret = train_stellar_model(
+        stellar_model,
+        d_val,
+        weights_per_star,
+        **val_kwargs
+    )
+
+    # Save validation-set stellar parameter estimates
+    fn_param = full_fn(f'data/stellar_params_val.h5')
+    idx_select = np.arange(n_val, dtype='i8')
+    save_param_est(d_val, idx_select, fn_param)
+
+
+def save_param_est(d, idx_sel, fname):
+    keys = ['stellar_type', 'xi', 'stellar_ext', 'plx']
+    p = {k+'_est':d[k+'_est'][idx_sel] for k in keys}
+    p['idx_select'] = idx_sel
+    save_as_h5(p, fname)
+
+
+def load_param_est(d, fname):
+    keys = ['stellar_type', 'xi', 'stellar_ext', 'plx']
+    with h5py.File(fname, 'r') as f:
+        idx = f['idx_select'][:]
+        for k in keys:
+            d[k+'_est'][idx] = f[k+'_est'][:]
+
+
+def get_default_args(func):
+    """
+    Returns a dictionary of the default keyword arguments for a function.
+
+    From https://stackoverflow.com/a/12627202.
+    """
+    import inspect
+    signature = inspect.signature(func)
+    return {
+        k: v.default
+        for k, v in signature.parameters.items()
+        if v.default is not inspect.Parameter.empty
+    }
+
+
+def calc_weights(d, idx_sel, stellar_type_prior, weighting, n_bins=100):
+    n = len(d['flux'])
+    weights = np.zeros(n, dtype='f4')
+    weights[idx_sel] = 1.
+
+    n_weightings = 0
+
+    # Weight by 1/prior
+    if weighting.get('prior',False):
+        w = weigh_prior(stellar_type_prior, d)
+        weights *= w
+        n_weightings += 1
+
+    # Weight by 1/(xi histogram)
+    if weighting.get('xi_hist',False):
+        w_sel = down_sample_weighting( 
+            d['xi_est'][idx_sel],
+            bin_edges=np.linspace(-0.8, 0.8, n_bins+1)
+        )
+        w = np.zeros_like(weights)
+        w[idx_sel] = w_sel
+        weights *= w
+        n_weightings += 1
+
+    # Soft-clip weights
+    if n_weightings > 1:
+        weights = soft_clip_weights(weights, 10.)
+
+    return weights
+        
+
+
+def get_selection(d, stellar_model, selection):
+    n = len(d['flux'])
+    idx_select = np.ones(n, dtype='bool')
+
+    # HQ subset
+    if selection.get('hq',False):
+        idx = (
+            (d['plx']/d['plx_err'] > 10.)
+          & np.all(d['stellar_type_err']<0.2, axis=1) # Type uncertainty
+          & (d['stellar_ext_err'] < 0.1)
+        )
+        print(f'HQ: {np.mean(idx):.3%} pass')
+        idx_select &= idx
+
+    # Large extinction uncertainty
+    if selection.get('large_E_uncertainty',False):
+        idx = (d['stellar_ext_err'] > 0.1)
+        print(f'Large E uncertainty: {np.mean(idx):.3%} pass')
+        idx_select &= idx
+
+    # Parameter outliers
+    if selection.get('remove_param_outliers',False):
+        # Self-cleaning: Identify outlier stars to exclude from further
+        # training, using distance from priors
+        idx = identify_outlier_stars(d)
+        print(f'Parameter outliers: {np.mean(idx):.3%} pass')
+        idx_select &= idx
+
+    # Flux outliers
+    if selection.get('remove_flux_outliers',False):
+        # Self-cleaning: Identify outlier stars to exclude from further
+        # training, using predicted - observed flux
+        idx = identify_flux_outliers(
+            d, stellar_model,
+            chi2_dof_clip=10.,
+            #chi_indiv_clip=20.
+        )
+        print(f'Flux outliers: {np.mean(idx):.3%} pass')
+        idx_select &= idx
+
+    # Minimum extinction
+    E_min = selection.get('E_min', None)
+    if E_min is not None:
+        idx = (d['stellar_ext_est'] > E_min)
+        print(f'Minimum E: {np.mean(idx):.3%} pass')
+        idx_select &= idx
+
+    print(f'Combined cuts: {np.mean(idx_select):.3%} pass')
+    return np.where(idx_select)[0]
+
+
 def main():
     parser = ArgumentParser(
         description='Train forward model of XP spectra.',
@@ -1023,10 +1464,10 @@ def main():
         help='Directory in which to store output.'
     )
     parser.add_argument(
-        '--stage',
-        type=int,
-        default=0,
-        help='Stage at which to begin training.'
+        '-r', '--recipe',
+        type=str,
+        required=True,
+        help='Training sequence recipe (JSON format).'
     )
     parser.add_argument(
         '--thin',
@@ -1034,15 +1475,12 @@ def main():
         default=1,
         help='Only use every Nth star in the training set.'
     )
-    parser.add_argument(
-        '--E_low',
-        type=float,
-        default=0.1,
-        help='Lower limit of extinction for ext curve variation.'
-    )
-    
     args = parser.parse_args()
-    train(args.input, args.output_dir, stage=args.stage, thin=args.thin, E_low=args.E_low)
+
+    with open(args.recipe, 'r') as f:
+        recipe = json.load(f)
+
+    execute_recipe(args.input, args.output_dir, recipe, thin=args.thin)
 
     return 0
 
