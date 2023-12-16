@@ -415,13 +415,26 @@ def hist2d_reduce(x, y, c, xlim=None, ylim=None, ax=None,
 
 
 def plot_loss(train_loss_hist, val_loss_hist=None, lr_hist=None,
-              smoothing="auto"):
+              smoothing="auto", max_hist_len=1024*64):
     """
     Plots the loss history for the training set (train_loss_hist) and validation set
     (val_loss_hist) and marks where the learning rate dropped (based on lr_hist)
     'significantly'. Draws two views, one for the whole history, the other
     for the last 50%.
     """
+
+    hist_len = len(train_loss_hist)
+    if hist_len > max_hist_len:
+        thin = int(np.ceil(hist_len / max_hist_len))
+        print(f'Thinning by a factor of {thin}.')
+        train_loss_hist = train_loss_hist[::thin]
+        if val_loss_hist is not None:
+            val_loss_hist = val_loss_hist[::thin]
+        if lr_hist is not None:
+            lr_hist = lr_hist[::thin]
+    else:
+        thin = 1
+
     if smoothing == "auto":
         n_smooth = np.clip(len(train_loss_hist) // 16, 4, 128)
     else:
@@ -439,13 +452,13 @@ def plot_loss(train_loss_hist, val_loss_hist=None, lr_hist=None,
     if val_loss_hist is not None:
         val_loss_conv = smooth_time_series(val_loss_hist)
 
-    n = np.arange(len(train_loss_hist))
+    n = thin * np.arange(len(train_loss_hist))
 
     # Detect discrete drops in learning rate
     if lr_hist is not None:
         lr_hist = np.array(lr_hist)
         lr_ratio = lr_hist[lr_hist > 0][1:] / lr_hist[lr_hist > 0][:-1]
-        n_drop = np.where(lr_ratio < 0.95)[0]
+        n_drop = thin * np.where(lr_ratio < 0.95)[0]
 
     fig, ax_arr = plt.subplots(1, 2, figsize=(8, 4))
     fig.subplots_adjust(left=0.14, right=0.98, wspace=0.25)
@@ -542,7 +555,7 @@ def plot_loss(train_loss_hist, val_loss_hist=None, lr_hist=None,
                     **kw,
                 )
 
-    return fig
+    return fig, ax_arr
 
 
 def main():
