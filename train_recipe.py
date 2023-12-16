@@ -1244,29 +1244,6 @@ def execute_recipe(data_fname, output_dir, recipe, thin=1):
             fn_param = full_fn(f'data/stellar_params_train.h5')
             idx_select = np.arange(n_train, dtype='i8')
             save_param_est(d_train, idx_select, fn_param)
-
-            # Learn validation set parameters
-            print('Optimizing stellar parameters in validation set ...')
-            val_kwargs = get_default_args(train_stellar_model)
-            val_kwargs.update({
-                'optimize_stellar_model': False,
-                'var_update': ['atm','E','plx','xi']
-            })
-            val_kwargs.update(recipe.get('validation',{}))
-            weights_per_star = np.ones(n_val, dtype='f4')
-            ret = train_stellar_model(
-                stellar_model,
-                d_val,
-                weights_per_star,
-                **val_kwargs
-            )
-
-            # Save validation-set stellar parameter estimates
-            fn_param = full_fn(f'data/stellar_params_val.h5')
-            idx_select = np.arange(n_val, dtype='i8')
-            save_param_est(d_val, idx_select, fn_param)
-
-
         
         train_hist = load_h5(full_fn(f'hist_loss/hist_{step_name}.h5'))
         if train_kwargs['optimize_stellar_params']:
@@ -1335,6 +1312,26 @@ def execute_recipe(data_fname, output_dir, recipe, thin=1):
         with open(fn_completed, 'w') as f:
             f.write('')
 
+        # Learn validation set parameters
+        print('Optimizing stellar parameters in validation set ...')
+        val_kwargs = get_default_args(train_stellar_model)
+        val_kwargs.update({
+            'optimize_stellar_model': False,
+            'var_update': ['atm','E','plx','xi']
+        })
+        val_kwargs.update(recipe.get('validation',{}))
+        weights_per_star = np.ones(n_val, dtype='f4')
+        ret = train_stellar_model(
+            stellar_model,
+            d_val,
+            weights_per_star,
+            **val_kwargs
+        )
+
+        # Save validation-set stellar parameter estimates
+        fn_param = full_fn(f'data/stellar_params_val.h5')
+        idx_select = np.arange(n_val, dtype='i8')
+        save_param_est(d_val, idx_select, fn_param)
 
 def save_param_est(d, idx_sel, fname):
     keys = ['stellar_type', 'xi', 'stellar_ext', 'plx']
