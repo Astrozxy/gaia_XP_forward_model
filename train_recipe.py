@@ -148,37 +148,38 @@ def plot_param_histograms_1d(stellar_type, weights, title, fname):
     plt.close(fig)
 
 
-def plot_extcurve_hist(hist_loss, key='ext_bias', lr_hist=None):
+def plot_extcurve_hist(hist_loss, key='ext_bias', max_len=1024*64):
     label_wl = [rf'${x:.0f}\,\mathrm{{nm}}$' for x in np.arange(392.,992.1,10)]
     label_wl += [rf'${l}$' for l in ['J','H','K_s','W1','W2']]
     idx_wl_plot = np.hstack([np.arange(0,61,20), np.arange(-5,0)])
     n_steps = hist_loss[key].shape[0]
+
+    if n_steps > max_len:
+        thin = int(np.ceil(n_steps / max_len))
+        print(f'Thinning by a factor of {thin}.')
+    else:
+        thin = 1
 
     norm = Normalize(0, len(idx_wl_plot)-1)
     cmap = plt.get_cmap('coolwarm')
 
     fig,ax = plt.subplots(1,1, figsize=(6,6))
 
-    x = np.arange(n_steps)
-
     for k,i in enumerate(idx_wl_plot):
-        y = hist_loss[key][:,i]
+        y = hist_loss[key][::thin,i]
+        x = thin * np.arange(len(y))
         dy = y - y[0]
         ax.plot(x, dy, c=cmap(norm(k)))
         ax.text(n_steps+0.01*n_steps, dy[-1], label_wl[i],
                 ha='left', va='center', fontsize=6)
 
     # Detect discrete drops in learning rate
-    if lr_hist is not None:
-        lr_hist = np.array(lr_hist)
+    if 'model_lr' in hist_loss:
+        lr_hist = np.array(hist_loss['model_lr'][::thin])
         lr_ratio = lr_hist[lr_hist > 0][1:] / lr_hist[lr_hist > 0][:-1]
-        n_drop = np.where(lr_ratio < 0.95)[0]
+        n_drop = thin * np.where(lr_ratio < 0.95)[0]
         for k in n_drop:
             ax.axvline(k, c='k', alpha=0.1, ls='--')
-
-    #for i in range(1,4):
-    #    xx = i*n_steps/4
-    #    ax.axvline(xx, c='k', alpha=0.1)
 
     ax.set_xlabel(r'$t\ (\mathrm{training\ step})$')
 
@@ -189,7 +190,7 @@ def plot_extcurve_hist(hist_loss, key='ext_bias', lr_hist=None):
 
     ax.grid(True, which='major', alpha=0.1)
 
-    return fig
+    return fig, ax
 
 
 def soft_clip_weights(weights, max_upsampling):
@@ -1245,8 +1246,8 @@ def execute_recipe(data_fname, output_dir, recipe, thin=1):
             save_param_est(d_train, idx_select, fn_param)
 
             # Plot stellar loss history
-            fig = plot_utils.plot_loss(train_hist['stellar_loss'],
-                                       lr_hist=train_hist['stellar_lr'])
+            fig,_ = plot_utils.plot_loss(train_hist['stellar_loss'],
+                                         lr_hist=train_hist['stellar_lr'])
             fig.savefig(full_fn(f'plots/loss_stellar_{step_name}'))
             plt.close(fig)
 
@@ -1260,8 +1261,8 @@ def execute_recipe(data_fname, output_dir, recipe, thin=1):
             stellar_model.save(fn_model)
 
             # Plot model loss history
-            fig = plot_utils.plot_loss(train_hist['model_loss'],
-                                       lr_hist=train_hist['model_lr'])
+            fig,_ = plot_utils.plot_loss(train_hist['model_loss'],
+                                         lr_hist=train_hist['model_lr'])
             fig.savefig(full_fn(f'plots/loss_model_{step_name}'))
             plt.close(fig)
 
@@ -1277,14 +1278,12 @@ def execute_recipe(data_fname, output_dir, recipe, thin=1):
                 plt.close(fig)
 
             if ext_curve_b:
-                fig = plot_extcurve_hist(train_hist, key='ext_bias',
-                                         lr_hist=train_hist['model_lr'])
+                fig_ = plot_extcurve_hist(train_hist, key='ext_bias')
                 fig.savefig(full_fn(f'plots/hist_ext_bias_{step_name}'))
                 plt.close(fig)
 
             if ext_curve_w:
-                fig = plot_extcurve_hist(train_hist, key='ext_slope',
-                                         lr_hist=train_hist['model_lr'])
+                fig,_ = plot_extcurve_hist(train_hist, key='ext_slope')
                 fig.savefig(full_fn(f'plots/hist_ext_slope_{step_name}'))
                 plt.close(fig)
 
