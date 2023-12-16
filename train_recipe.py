@@ -1276,14 +1276,12 @@ def execute_recipe(data_fname, output_dir, recipe, thin=1):
                 plt.close(fig)
 
             if ext_curve_b:
-                fig_ = plot_extcurve_hist(train_hist, key='ext_bias',
-                                          lr_hist=train_hist['model_lr'])
+                fig_ = plot_extcurve_hist(train_hist, key='ext_bias')
                 fig.savefig(full_fn(f'plots/hist_ext_bias_{step_name}'))
                 plt.close(fig)
 
             if ext_curve_w:
-                fig,_ = plot_extcurve_hist(train_hist, key='ext_slope',
-                                           lr_hist=train_hist['model_lr'])
+                fig,_ = plot_extcurve_hist(train_hist, key='ext_slope')
                 fig.savefig(full_fn(f'plots/hist_ext_slope_{step_name}'))
                 plt.close(fig)
 
