@@ -1181,6 +1181,39 @@ def execute_recipe(data_fname, output_dir, recipe, thin=1):
         print(json.dumps(stage, indent=2))
         print('')
 
+        print('Determining selection ...')
+        idx_select = get_selection(
+            d_train,
+            stellar_model,
+            stage.get('selection',{})
+        )
+
+        # Weights
+        print('Calculating weights ...')
+        weights_per_star = calc_weights(
+            d_train, idx_select,
+            stellar_type_prior,
+            stage.get('weighting',{})
+        )
+
+        # Plot training data
+        print('Plotting training data ...')
+        title = (
+            r'$\mathrm{Training\ distribution}'
+          + r'\ (\mathtt{{ {} }})$'.format(step_name.replace('_',r'\_'))
+        )
+        plot_param_histograms_1d(
+            d_train['stellar_type'][idx_select],
+            weights_per_star[idx_select],
+            title,
+            full_fn(f'plots/training_stellar_type_hist1d_{step_name}')
+        )
+
+        # Load training receipe
+        train_kwargs = get_default_args(train_stellar_model)
+        train_kwargs.update(stage.get('train',{}))
+        train_kwargs.update(dict(idx_train=idx_select))
+    
         # Look for existing checkpoint
         fn_completed = full_fn(f'data/completed_{step_name}')
         if os.path.exists(fn_completed):
@@ -1201,38 +1234,8 @@ def execute_recipe(data_fname, output_dir, recipe, thin=1):
             #continue
 
         else:
-            print('Determining selection ...')
-            idx_select = get_selection(
-                d_train,
-                stellar_model,
-                stage.get('selection',{})
-            )
-
-            # Weights
-            print('Calculating weights ...')
-            weights_per_star = calc_weights(
-                d_train, idx_select,
-                stellar_type_prior,
-                stage.get('weighting',{})
-            )
-
-            # Plot training data
-            print('Plotting training data ...')
-            title = (
-                r'$\mathrm{Training\ distribution}'
-              + r'\ (\mathtt{{ {} }})$'.format(step_name.replace('_',r'\_'))
-            )
-            plot_param_histograms_1d(
-                d_train['stellar_type'][idx_select],
-                weights_per_star[idx_select],
-                title,
-                full_fn(f'plots/training_stellar_type_hist1d_{step_name}')
-            )
 
             # Train
-            train_kwargs = get_default_args(train_stellar_model)
-            train_kwargs.update(stage.get('train',{}))
-            train_kwargs.update(dict(idx_train=idx_select))
             train_hist = train_stellar_model(
                 stellar_model,
                 d_train,
