@@ -1173,6 +1173,9 @@ def execute_recipe(data_fname, output_dir, recipe, thin=1):
         print('='*79)
         print(f'Stage: {step_name}')
         print('='*79)
+        if 'description' in stage:
+            print('')
+            print(stage['description'])
         print('')
         print('Settings:')
         print(json.dumps(stage, indent=2))
@@ -1283,7 +1286,7 @@ def execute_recipe(data_fname, output_dir, recipe, thin=1):
                 plt.close(fig)
 
             if ext_curve_b:
-                fig_ = plot_extcurve_hist(train_hist, key='ext_bias')
+                fig,_ = plot_extcurve_hist(train_hist, key='ext_bias')
                 fig.savefig(full_fn(f'plots/hist_ext_bias_{step_name}'))
                 plt.close(fig)
 
