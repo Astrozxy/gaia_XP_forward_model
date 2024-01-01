@@ -1247,14 +1247,13 @@ def execute_recipe(data_fname, output_dir, recipe, thin=1):
             save_as_h5(train_hist, full_fn(f'hist_loss/hist_{step_name}.h5'))
 
             # Save training-set stellar parameter estimates
-            fn_param = full_fn(f'data/stellar_params_train.h5')
             idx_select = np.arange(n_train, dtype='i8')
             save_param_est(d_train, idx_select, fn_param)
         
         train_hist = load_h5(full_fn(f'hist_loss/hist_{step_name}.h5'))
         if train_kwargs['optimize_stellar_params']:
             # Save stellar parameter estimates
-            save_param_est(d_train, idx_select, fn_param)
+            #save_param_est(d_train, idx_select, fn_param)
 
             # Plot stellar loss history
             fig,_ = plot_utils.plot_loss(train_hist['stellar_loss'],
@@ -1411,6 +1410,7 @@ def get_selection(d, stellar_model, selection):
             (d['plx']/d['plx_err'] > 10.)
           & np.all(d['stellar_type_err']<0.2, axis=1) # Type uncertainty
           & (d['stellar_ext_err'] < 0.1)
+          & (d['stellar_ext'] > 0.01)
         )
         print(f'HQ: {np.mean(idx):.3%} pass')
         idx_select &= idx
