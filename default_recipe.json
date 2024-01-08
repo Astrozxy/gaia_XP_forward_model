@@ -13,31 +13,33 @@
         "prior": true
       },
       "train": {
-        "n_epochs": 512,
+        "n_epochs": 4096,
         "lr_model_init": 1.0e-4,
-        "lr_n_drops": 2,
+        "lr_n_drops": 3,
         "optimize_stellar_model": true,
         "optimize_stellar_params": false,
         "model_update": ["stellar_model","ext_curve_b"]
-      }
+      },
+      "description": "Initial training of model, assuming HQ stellar parameters are correct."
     },
     {
       "selection": {
         "hq": true
       },
       "weighting": {
-        "prior": true,
-        "xi_hist": true
+        "prior": true
       },
       "train": {
-        "n_epochs": 512,
+        "n_epochs": 4096,
         "lr_model_init": 1.0e-4,
         "lr_stars_init": 1.0e-4,
+        "lr_n_drops": 3,
         "optimize_stellar_model": true,
         "optimize_stellar_params": true,
         "model_update": ["stellar_model","ext_curve_b"],
         "var_update": ["atm","E","plx"]
-      }
+      },
+      "description": "Simultaneously learn model and HQ stellar parameters."
     },
     {
       "selection": {
@@ -45,23 +47,27 @@
       },
       "weighting": {},
       "train": {
-        "n_epochs": 512,
+        "n_epochs": 2048,
         "lr_stars_init": 1.0e-2,
+        "lr_n_drops": 3,
         "optimize_stellar_model": false,
         "optimize_stellar_params": true,
         "var_update": ["E"]
-      }
+      },
+      "description": "Learn E for stars that have large E uncertainties."
     },
     {
       "selection": {},
       "weighting": {},
       "train": {
-        "n_epochs": 512,
+        "n_epochs": 2048,
         "lr_stars_init": 1.0e-4,
+        "lr_n_drops": 3,
         "optimize_stellar_model": false,
         "optimize_stellar_params": true,
         "var_update": ["atm","E","plx"]
-      }
+      },
+      "description": "Further optimize parameters of all stars."
     },
     {
       "selection": {
@@ -73,14 +79,16 @@
         "prior": true
       },
       "train": {
-        "n_epochs": 512,
+        "n_epochs": 4096,
         "lr_model_init": 1.0e-4,
         "lr_stars_init": 1.0e-4,
+        "lr_n_drops": 3,
         "optimize_stellar_model": true,
         "optimize_stellar_params": true,
         "model_update": ["stellar_model","ext_curve_b"],
         "var_update": ["atm","E","plx"]
-      }
+      },
+      "description": "Learn stellar and model parameters, using HQ, non-outlier stars."
     },
     {
       "selection": {
@@ -96,7 +104,8 @@
         "optimize_stellar_model": false,
         "optimize_stellar_params": true,
         "var_update": ["E","xi","plx"]
-      }
+      },
+      "description": "Learn xi (along with E and plx) of HQ stars with E>0.1."
     },
     {
       "selection": {
