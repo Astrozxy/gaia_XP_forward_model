@@ -1448,6 +1448,13 @@ def get_selection(d, stellar_model, selection):
         print(f'Minimum E: {np.mean(idx):.3%} pass')
         idx_select &= idx
 
+    # Maximum extinction
+    E_max = selection.get('E_max', None)
+    if E_max is not None:
+        idx = (d['stellar_ext_est'] < E_max)
+        print(f'Maximum E: {np.mean(idx):.3%} pass')
+        idx_select &= idx
+
     print(f'Combined cuts: {np.mean(idx_select):.3%} pass')
     return np.where(idx_select)[0]
 

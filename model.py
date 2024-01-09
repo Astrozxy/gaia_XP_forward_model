@@ -62,7 +62,8 @@ class FluxModel(snt.Module):
                        n_hidden=3, hidden_size=32,
                        n_wl_fix_ext=2,
                        input_zp=None, input_scale=None,
-                       l2=1., l2_ext_curve=1.):
+                       l2=1., l2_ext_curve=0.1,
+                       l2_curvature=1., l2_roughness=1.):
         """
         Constructor for FluxModel.
 
@@ -94,6 +95,12 @@ class FluxModel(snt.Module):
                                 meaning that a chi^2 increase of ~1 will be
                                 accepted to obtain a more well-behaved
                                 extinction curve.
+          l2_curvature (float): l2 penalty to apply to a measure of the
+                                curvature of the predicted intrinsic model flux
+                                w.r.t. the stellar parameters. Defaults to 1.
+          l2_roughness (float): l2 penalty to apply to a measure of the
+                                gradients of the predicted intrinsic model flux
+                                w.r.t. the stellar parameters. Defaults to 1.
         """
         super(FluxModel, self).__init__(name='flux_model')
 
@@ -109,7 +116,7 @@ class FluxModel(snt.Module):
         self._hidden_size = hidden_size
         self._n_wl_fix_ext = n_wl_fix_ext
 
-        # L2 penalty on neural network weights
+        # L2 penalty constants
         self._l2 = tf.Variable(
             l2, name='l2',
             dtype=tf.float32,
@@ -117,6 +124,16 @@ class FluxModel(snt.Module):
         )
         self._l2_ext_curve = tf.Variable(
             l2_ext_curve, name='l2_ext_curve',
+            dtype=tf.float32,
+            trainable=False
+        )
+        self._l2_curvature = tf.Variable(
+            l2_curvature, name='l2_curvature',
+            dtype=tf.float32,
+            trainable=False
+        )
+        self._l2_roughness = tf.Variable(
+            l2_roughness, name='l2_roughness',
             dtype=tf.float32,
             trainable=False
         )
@@ -325,7 +342,9 @@ class FluxModel(snt.Module):
 
         return f_norm
 
-    def curvature_roughness(self, stellar_type, reduce_stars=True):
+    def curvature_roughness(self, stellar_type,
+                            reduce_stars=True,
+                            apply_l2_const=True):
         with tf.GradientTape(watch_accessed_variables=False) as gg:
             gg.watch(stellar_type)
             
@@ -350,6 +369,10 @@ class FluxModel(snt.Module):
             # (star,)
             curve = tf.reduce_mean(d2f_dx2**2, axis=(1,2))
             rough = tf.math.reduce_std(df_dx_reduced2, axis=1)
+
+        if apply_l2_const:
+            curve = self._l2_curvature * curvature
+            rough = self._l2_roughness * rough
 
         return curve, rough
 
@@ -394,6 +417,11 @@ class FluxModel(snt.Module):
             l2_sum = l2_sum + self._l2_ext_curve*tf.reduce_mean(
                 ((slope0-slope1) / dwl_wo_unwise)**2
             )
+            ## Uniform prior on extinction curve bias
+            #l2_sum = (
+            #    l2_sum
+            #  - self._l2_ext_curve * tf.reduce_mean(self._ext_bias)
+            #)
 
         return l2_sum
 
@@ -479,8 +507,6 @@ def grads_stellar_model(stellar_model,
                         flux_obs, flux_sqrticov,
                         extra_weight,
                         chi2_turnover=tf.constant(20.),        
-                        roughness_l2=tf.constant(2.),
-                        curvature_l2=tf.constant(2.),
                         model_update=['stellar_model',
                                       'ext_curve_w','ext_curve_b'],
                        ):
@@ -532,12 +558,13 @@ def grads_stellar_model(stellar_model,
 
         # Average individual chi^2 values
         chi2 = tf.reduce_sum(extra_weight*chi2) / tf.reduce_sum(extra_weight)
+
         # Add in penalty (generally, for model complexity)
         loss = chi2 + stellar_model.penalty()
 
         # Penalties on gradients & curvature of model
         curve,rough = stellar_model.curvature_roughness(stellar_type)
-        loss = loss + curvature_l2*curve + roughness_l2*rough
+        loss = loss + curve + rough
 
     # Calculate d(loss)/d(variables)
     grads = g.gradient(loss, variables)
@@ -606,6 +633,7 @@ def grads_stellar_params(stellar_model,
         # Posterior (one value per star, as they are independent)
         # Caution: Do not multiply extra weight here, which slows down the update of atm
         posterior = (chi2 + prior)
+
     # Calculate d(posterior)/d(variables). Separate gradient per star.
     grads = g.gradient(posterior, variables)
     return posterior, variables, grads
@@ -682,6 +710,14 @@ def identify_flux_outliers(data,
     return idx_good
 
 
+class ConstantLearningRate(keras.optimizers.schedules.LearningRateSchedule):
+    def __init__(self, learning_rate):
+      self._learning_rate = tf.convert_to_tensor(learning_rate)
+
+    def __call__(self, step):
+       return self._learning_rate
+
+
 def train_stellar_model(stellar_model,
                         d_train,
                         extra_weight,
@@ -714,10 +750,13 @@ def train_stellar_model(stellar_model,
 
     # Optimizer for stellar model and extinction curve
     n_segments = lr_n_drops + 1
-    lr_model = keras.optimizers.schedules.PiecewiseConstantDecay(
-        [int(n_batches*k/n_segments) for k in range(1,n_segments)],
-        [lr_model_init*(0.1**k) for k in range(n_segments)]
-    )
+    if n_segments > 1:
+        lr_model = keras.optimizers.schedules.PiecewiseConstantDecay(
+            [int(n_batches*k/n_segments) for k in range(1,n_segments)],
+            [lr_model_init*(0.1**k) for k in range(n_segments)]
+        )
+    else:
+        lr_model = ConstantLearningRate(lr_model_init)
     opt_model = keras.optimizers.SGD(learning_rate=lr_model, momentum=0.9)
     #opt_model = keras.optimizers.Adam(learning_rate=lr_model)
 
@@ -745,10 +784,13 @@ def train_stellar_model(stellar_model,
     # Optimizer for stellar parameters.
     # No momentum, because different stellar parameters fit each batch,
     # so direction of last step is irrelevant.
-    lr_stars = keras.optimizers.schedules.PiecewiseConstantDecay(
-        [int(n_batches*k/n_segments) for k in range(1,n_segments)],
-        [lr_stars_init*(0.1**k) for k in range(n_segments)]
-    )
+    if n_segments > 1:
+        lr_stars = keras.optimizers.schedules.PiecewiseConstantDecay(
+            [int(n_batches*k/n_segments) for k in range(1,n_segments)],
+            [lr_stars_init*(0.1**k) for k in range(n_segments)]
+        )
+    else:
+        lr_stars = ConstantLearningRate(lr_stars_init)
     opt_st_params = keras.optimizers.SGD(learning_rate=lr_stars, momentum=0.)
 
     st_type_dim = d_train['stellar_type'].shape[1]
