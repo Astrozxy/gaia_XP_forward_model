@@ -151,8 +151,12 @@ def plot_param_histograms_1d(stellar_type, weights, title, fname):
 def plot_extcurve_hist(hist_loss, key='ext_bias', max_len=1024*64):
     label_wl = [rf'${x:.0f}\,\mathrm{{nm}}$' for x in np.arange(392.,992.1,10)]
     label_wl += [rf'${l}$' for l in ['J','H','K_s','W1','W2']]
-    idx_wl_plot = np.hstack([np.arange(0,61,20), np.arange(-5,0)])
+    idx_wl_plot = np.hstack([np.arange(0,61,20), np.arange(61,66)])
     n_steps = hist_loss[key].shape[0]
+
+    if key == 'ext_slope':
+        idx_wl_plot = idx_wl_plot[:-2]
+        label_wl = label_wl[:-2]
 
     if n_steps > max_len:
         thin = int(np.ceil(n_steps / max_len))
@@ -273,7 +277,7 @@ def train(data_fname, output_dir, stage=0, thin=1, E_low=0.1, n_epochs=512):
             print('Generating Gaussian Mixture Model prior on stellar type ...')
             stellar_type_prior = GaussianMixtureModel(3, n_components=16)
             # Use at most this many stars to learn GMM prior
-            n_prior_max = 1024*256 
+            n_prior_max = 1024*512 
             stellar_type_prior.fit(d_train['stellar_type'][:n_prior_max])
             stellar_type_prior.save(fn_prior)
             print('  -> Plotting prior ...')
@@ -1318,16 +1322,28 @@ def execute_recipe(data_fname, output_dir, recipe, thin=1):
     val_kwargs = get_default_args(train_stellar_model)
     val_kwargs.update({
         'optimize_stellar_model': False,
+        'optimize_stellar_params': True,
         'var_update': ['atm','E','plx','xi']
     })
     val_kwargs.update(recipe.get('validation',{}))
     weights_per_star = np.ones(n_val, dtype='f4')
-    ret = train_stellar_model(
+    val_hist = train_stellar_model(
         stellar_model,
         d_val,
         weights_per_star,
         **val_kwargs
     )
+
+    # Plot validation stellar loss history
+    fig,_ = plot_utils.plot_loss(val_hist['stellar_loss'],
+                                 lr_hist=val_hist['stellar_lr'])
+    fig.savefig(full_fn(f'plots/loss_stellar_validation'))
+    plt.close(fig)
+
+    # Plot validation R(V) histogram
+    fig,_ = model.plot_RV_histogram(stellar_model, d_val)
+    fig.savefig(full_fn(f'plots/Rv_histogram_validation'))
+    plt.close(fig)
 
     # Save validation-set stellar parameter estimates
     fn_param = full_fn(f'data/stellar_params_val.h5')
