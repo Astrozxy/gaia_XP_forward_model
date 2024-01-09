@@ -1,0 +1,21 @@
+# Pictures
+*.svg
+*.png
+*.pdf
+
+# Temporary files
+*.swp
+
+# Log files
+*.log
+
+# Backup files
+*.bak*
+
+# Data files
+*.h5
+*.fits
+*.json
+*.tar
+*.tar.gz
+*.tgz
