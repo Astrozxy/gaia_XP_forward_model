@@ -1,8 +1,10 @@
 {
   "model": {
     "hidden_size": 32,
-    "l2": 5.0,
-    "l2_ext_curve": 0.5
+    "l2": 1.0,
+    "l2_curvature": 1.0,
+    "l2_roughness": 1.0,
+    "l2_ext_curve": 0.1
   },
   "stages": [
     {
@@ -13,9 +15,9 @@
         "prior": true
       },
       "train": {
-        "n_epochs": 4096,
+        "n_epochs": 512,
         "lr_model_init": 1.0e-4,
-        "lr_n_drops": 3,
+        "lr_n_drops": 7,
         "optimize_stellar_model": true,
         "optimize_stellar_params": false,
         "model_update": ["stellar_model","ext_curve_b"]
@@ -27,12 +29,28 @@
         "hq": true
       },
       "weighting": {
+      },
+      "train": {
+        "n_epochs": 512,
+        "lr_stars_init": 5.0e-5,
+        "lr_n_drops": 7,
+        "optimize_stellar_model": false,
+        "optimize_stellar_params": true,
+        "var_update": ["atm","E","plx"]
+      },
+      "description": "Update HQ stellar parameters using learned model."
+    },
+    {
+      "selection": {
+        "hq": true
+      },
+      "weighting": {
         "prior": true
       },
       "train": {
-        "n_epochs": 4096,
-        "lr_model_init": 1.0e-4,
-        "lr_stars_init": 1.0e-4,
+        "n_epochs": 1024,
+        "lr_model_init": 5.0e-5,
+        "lr_stars_init": 5.0e-5,
         "lr_n_drops": 3,
         "optimize_stellar_model": true,
         "optimize_stellar_params": true,
@@ -40,34 +58,6 @@
         "var_update": ["atm","E","plx"]
       },
       "description": "Simultaneously learn model and HQ stellar parameters."
-    },
-    {
-      "selection": {
-        "large_E_uncertainty": true
-      },
-      "weighting": {},
-      "train": {
-        "n_epochs": 2048,
-        "lr_stars_init": 1.0e-2,
-        "lr_n_drops": 3,
-        "optimize_stellar_model": false,
-        "optimize_stellar_params": true,
-        "var_update": ["E"]
-      },
-      "description": "Learn E for stars that have large E uncertainties."
-    },
-    {
-      "selection": {},
-      "weighting": {},
-      "train": {
-        "n_epochs": 2048,
-        "lr_stars_init": 1.0e-4,
-        "lr_n_drops": 3,
-        "optimize_stellar_model": false,
-        "optimize_stellar_params": true,
-        "var_update": ["atm","E","plx"]
-      },
-      "description": "Further optimize parameters of all stars."
     },
     {
       "selection": {
@@ -79,9 +69,9 @@
         "prior": true
       },
       "train": {
-        "n_epochs": 4096,
-        "lr_model_init": 1.0e-4,
-        "lr_stars_init": 1.0e-4,
+        "n_epochs": 1024,
+        "lr_model_init": 1.0e-5,
+        "lr_stars_init": 1.0e-5,
         "lr_n_drops": 3,
         "optimize_stellar_model": true,
         "optimize_stellar_params": true,
@@ -100,7 +90,8 @@
       },
       "train": {
         "n_epochs": 512,
-        "lr_stars_init": 1.0e-4,
+        "lr_stars_init": 5.0e-5,
+        "lr_n_drops": 3,
         "optimize_stellar_model": false,
         "optimize_stellar_params": true,
         "var_update": ["E","xi","plx"]
@@ -118,13 +109,15 @@
       },
       "train": {
         "n_epochs": 512,
-        "lr_model_init": 1.0e-4,
-        "lr_stars_init": 1.0e-4,
+        "lr_model_init": 5.0e-5,
+        "lr_stars_init": 5.0e-5,
+        "lr_n_drops": 3,
         "optimize_stellar_model": true,
         "optimize_stellar_params": true,
         "model_update": ["ext_curve_b"],
-        "var_update": ["E","xi"]
-      }
+        "var_update": ["E","xi","plx"]
+      },
+      "description": "Simultaneously learn mean extinction curve and (xi, E, plx) of HQ stars with E>0.1."
     },
     {
       "selection": {
@@ -138,12 +131,14 @@
       "train": {
         "n_epochs": 512,
         "lr_model_init": 1.0e-4,
-        "lr_stars_init": 1.0e-4,
+        "lr_stars_init": 5.0e-5,
+        "lr_n_drops": 3,
         "optimize_stellar_model": true,
         "optimize_stellar_params": true,
         "model_update": ["ext_curve_w"],
-        "var_update": ["E","xi"]
-      }
+        "var_update": ["E","xi","plx"]
+      },
+      "description": "Simultaneously learn extinction curve variation and (xi, E) of HQ stars with E>0.1."
     },
     {
       "selection": {
@@ -156,21 +151,40 @@
       },
       "train": {
         "n_epochs": 512,
-        "lr_model_init": 1.0e-4,
-        "lr_stars_init": 1.0e-4,
+        "lr_model_init": 5.0e-6,
+        "lr_stars_init": 5.0e-6,
+        "lr_n_drops": 3,
         "optimize_stellar_model": true,
         "optimize_stellar_params": true
-      }
+      },
+      "description": "Learn everything using HQ stars with E>0.1."
+    },
+    {
+      "selection": {
+        "large_E_uncertainty": true
+      },
+      "weighting": {},
+      "train": {
+        "n_epochs": 768,
+        "lr_stars_init": 1.0e-2,
+        "lr_n_drops": 11,
+        "optimize_stellar_model": false,
+        "optimize_stellar_params": true,
+        "var_update": ["E"]
+      },
+      "description": "Learn E of stars with large uncertainties."
     },
     {
       "selection": {},
       "weighting": {},
       "train": {
         "n_epochs": 512,
-        "lr_stars_init": 1.0e-4,
+        "lr_stars_init": 5.0e-5,
+        "lr_n_drops": 3,
         "optimize_stellar_model": false,
         "optimize_stellar_params": true
-      }
+      },
+      "description": "Learn parameters of all stars."
     },
     {
       "selection": {
@@ -183,25 +197,50 @@
       },
       "train": {
         "n_epochs": 512,
-        "lr_model_init": 1.0e-4,
-        "lr_stars_init": 1.0e-4,
+        "lr_model_init": 1.0e-5,
+        "lr_stars_init": 1.0e-5,
+        "lr_n_drops": 3,
         "optimize_stellar_model": true,
         "optimize_stellar_params": true,
         "model_update": ["stellar_model","ext_curve_b"]
-      }
+      },
+      "description": "Learn parameters of non-outlier stars, stellar model and mean extinction curve."
+    },
+    {
+      "selection": {
+        "remove_param_outliers": true,
+        "remove_flux_outliers": true
+      },
+      "weighting": {
+        "prior": true,
+        "xi_hist": true
+      },
+      "train": {
+        "n_epochs": 1024,
+        "lr_model_init": 1.0e-6,
+        "lr_stars_init": 1.0e-6,
+        "lr_n_drops": 7,
+        "optimize_stellar_model": true,
+        "optimize_stellar_params": true
+      },
+      "description": "Learn everything using non-outlier stars."
     },
     {
       "selection": {},
       "weighting": {},
       "train": {
         "n_epochs": 512,
-        "lr_stars_init": 1.0e-4,
+        "lr_stars_init": 1.0e-6,
+        "lr_n_drops": 3,
         "optimize_stellar_model": false,
         "optimize_stellar_params": true
-      }
+      },
+      "description": "Refine parameters of all stars."
     }
   ],
   "validation": {
-    "n_epochs": 1024
+    "n_epochs": 4096,
+    "lr_stars_init": 1.0e-3,
+    "lr_n_drops": 11
   }
 }
