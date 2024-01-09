@@ -48,12 +48,28 @@ def batch_apply_tf(f, batch_size, *args,
         batch = [a[i:i+batch_size] for a in args]
         res_batch = f_batch(*batch)
         if numpy:
-            res_batch = res_batch.numpy()
+            if isinstance(res_batch, tuple):
+                # Handle case where multiple tensors are returned
+                res_batch = tuple((r.numpy() for r in res_batch))
+            else:
+                res_batch = res_batch.numpy()
         res.append(res_batch)
+    
     if numpy:
-        res = np.concatenate(res, axis=0)
+        f_concat = np.concatenate
     else:
-        res = tf.concat(res, axis=0)
+        f_concat = tf.concat
+
+    if isinstance(res[0], tuple):
+        # Handle case where multiple tensors are returned
+        n = len(res[0])
+        res = tuple((
+            f_concat([r[i] for r in res], axis=0)
+            for i in range(n)
+        ))
+    else:
+        res = f_concat(res, axis=0)
+
     return res
 
 

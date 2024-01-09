@@ -371,7 +371,7 @@ class FluxModel(snt.Module):
             rough = tf.math.reduce_std(df_dx_reduced2, axis=1)
 
         if apply_l2_const:
-            curve = self._l2_curvature * curvature
+            curve = self._l2_curvature * curve
             rough = self._l2_roughness * rough
 
         return curve, rough
@@ -728,6 +728,7 @@ def train_stellar_model(stellar_model,
                         lr_stars_init=1e-3,
                         lr_model_init=1e-4,
                         lr_n_drops=2,
+                        lr_drop_factor=0.5,
                         model_update=['stellar_model',
                                       'ext_curve_w','ext_curve_b'],
                         var_update=['atm','E','plx','xi']
@@ -753,7 +754,7 @@ def train_stellar_model(stellar_model,
     if n_segments > 1:
         lr_model = keras.optimizers.schedules.PiecewiseConstantDecay(
             [int(n_batches*k/n_segments) for k in range(1,n_segments)],
-            [lr_model_init*(0.1**k) for k in range(n_segments)]
+            [lr_model_init*(lr_drop_factor**k) for k in range(n_segments)]
         )
     else:
         lr_model = ConstantLearningRate(lr_model_init)
@@ -787,7 +788,7 @@ def train_stellar_model(stellar_model,
     if n_segments > 1:
         lr_stars = keras.optimizers.schedules.PiecewiseConstantDecay(
             [int(n_batches*k/n_segments) for k in range(1,n_segments)],
-            [lr_stars_init*(0.1**k) for k in range(n_segments)]
+            [lr_stars_init*(lr_drop_factor**k) for k in range(n_segments)]
         )
     else:
         lr_stars = ConstantLearningRate(lr_stars_init)
