@@ -49,8 +49,8 @@
       },
       "train": {
         "n_epochs": 1024,
-        "lr_model_init": 5.0e-5,
-        "lr_stars_init": 5.0e-5,
+        "lr_model_init": 2.5e-5,
+        "lr_stars_init": 2.5e-5,
         "lr_n_drops": 3,
         "optimize_stellar_model": true,
         "optimize_stellar_params": true,
@@ -129,9 +129,9 @@
         "xi_hist": true
       },
       "train": {
-        "n_epochs": 512,
+        "n_epochs": 1024,
         "lr_model_init": 1.0e-4,
-        "lr_stars_init": 5.0e-5,
+        "lr_stars_init": 1.0e-5,
         "lr_n_drops": 3,
         "optimize_stellar_model": true,
         "optimize_stellar_params": true,
@@ -143,6 +143,23 @@
     {
       "selection": {
         "hq": true,
+	"E_min":0.1
+      },
+      "weighting": {
+      },
+      "train": {
+        "n_epochs": 512,
+        "lr_stars_init": 5.0e-5,
+        "lr_n_drops": 7,
+        "optimize_stellar_model": false,
+        "optimize_stellar_params": true,
+        "var_update": ["atm","E","xi","plx"]
+      },
+      "description": "Optimize parameters before setting free all parameters"
+    },
+    {
+      "selection": {
+        "hq": true,
         "E_min": 0.1
       },
       "weighting": {
@@ -150,9 +167,9 @@
         "xi_hist": true
       },
       "train": {
-        "n_epochs": 512,
-        "lr_model_init": 5.0e-6,
-        "lr_stars_init": 5.0e-6,
+        "n_epochs": 1024,
+        "lr_model_init": 5.0e-5,
+        "lr_stars_init": 5.0e-5,
         "lr_n_drops": 3,
         "optimize_stellar_model": true,
         "optimize_stellar_params": true
