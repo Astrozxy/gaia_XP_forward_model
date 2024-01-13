@@ -129,7 +129,7 @@
         "xi_hist": true
       },
       "train": {
-        "n_epochs": 1024,
+        "n_epochs": 2048,
         "lr_model_init": 1.0e-4,
         "lr_stars_init": 1.0e-5,
         "lr_n_drops": 3,
@@ -168,8 +168,8 @@
       },
       "train": {
         "n_epochs": 1024,
-        "lr_model_init": 5.0e-5,
-        "lr_stars_init": 5.0e-5,
+        "lr_model_init": 1.0e-5,
+        "lr_stars_init": 1.0e-5,
         "lr_n_drops": 3,
         "optimize_stellar_model": true,
         "optimize_stellar_params": true
